@@ -115,3 +115,50 @@ export function scopeToManhattan(stats: DayStats): { stats: DayStats; manhattan:
   if (!m || typeof m.totalTrips !== 'number') return { stats, manhattan: false };
   return { stats: { ...stats, ...m, date: stats.date } as DayStats, manhattan: true };
 }
+
+// ---------------------------------------------------------------------------
+// Light: the loop follows the sun. Night is dark; at sunrise a scan line
+// sweeps up the frame and leaves day behind it; at sunset it sweeps back down.
+// ---------------------------------------------------------------------------
+
+// Clip second at which the story clock reaches `hour` (the clock only runs
+// forward, so bisection is exact enough).
+export function timeForHour(keys: Keyframe[], hour: number): number | null {
+  let lo = 0, hi = LITE_SECONDS;
+  if (hour < hourAt(keys, lo) || hour > hourAt(keys, hi)) return null;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (hourAt(keys, mid) < hour) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+export interface LightPlan {
+  riseT: number | null;  // clip seconds
+  setT: number | null;
+}
+
+export const WIPE_SECONDS = 0.8;
+
+export function lightPlan(keys: Keyframe[], sunrise: number, sunset: number): LightPlan {
+  return { riseT: timeForHour(keys, sunrise), setT: timeForHour(keys, sunset) };
+}
+
+const smoothstep = (x: number) => {
+  const c = Math.max(0, Math.min(1, x));
+  return c * c * (3 - 2 * c);
+};
+
+// Share of the frame, from the bottom up, that is in daylight. The scan line
+// sits at 1 - dayFrac of the frame height.
+export function dayFracAt(plan: LightPlan, t: number): number {
+  const up = plan.riseT === null ? 0 : smoothstep((t - plan.riseT) / WIPE_SECONDS + 0.5);
+  const down = plan.setT === null ? 0 : smoothstep((t - plan.setT) / WIPE_SECONDS + 0.5);
+  return Math.max(0, up - down);
+}
+
+// How "day" the ink should be for words at a given height (0 = top, 1 =
+// bottom): they flip when the scan line passes them.
+export function inkDayAt(dayFrac: number, yFrac: number): number {
+  return smoothstep((dayFrac - (1 - yFrac)) / 0.08 + 0.5);
+}

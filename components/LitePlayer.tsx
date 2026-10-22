@@ -5,7 +5,8 @@ import { loadDayStats, resolveDay } from '@/lib/dayData';
 import type { DayStats } from '@/lib/story';
 import { formatStoryDate } from '@/lib/story';
 import { loadAllRides, loadSampleRides, type RideSet } from '@/lib/rides';
-import { LiteRenderer } from '@/lib/renderer';
+import { LiteRenderer, type Outline } from '@/lib/renderer';
+import { sunTimes } from '@/lib/sun';
 import {
   LITE_FPS,
   LITE_FRAMES,
@@ -20,6 +21,9 @@ import {
   hourAt,
   liteCaptions,
   liteKeyframes,
+  lightPlan,
+  dayFracAt,
+  inkDayAt,
   scopeToManhattan,
 } from '@/lib/timeline';
 import LiteStatsCard, { sparkX } from './LiteStatsCard';
@@ -37,6 +41,7 @@ interface Props {
 }
 
 interface Loaded {
+  outline: Outline | null;
   stats: DayStats;
   manhattan: boolean;
   rides: RideSet;
@@ -48,6 +53,18 @@ interface ClipApi {
   fps: number;
   isReady: () => boolean;
   seek: (frame: number) => Promise<void>;
+}
+
+// Words are white with a dark halo at night and near-black at day.
+const INK_NIGHT = { '--ink': '255,255,255', '--halo': '0,0,0,0.8' } as React.CSSProperties;
+function setInk(el: HTMLElement | null, day: number) {
+  if (!el) return;
+  const v = Math.round(255 + (20 - 255) * day);
+  el.style.setProperty('--ink', `${v},${v + Math.round(2 * day)},${v + Math.round(6 * day)}`);
+  // The halo turns from a dark shadow into a paper glow, so words stay
+  // readable over busy streets either way.
+  const p = [239, 238, 233].map(c => Math.round(c * day));
+  el.style.setProperty('--halo', `${p[0]},${p[1]},${p[2]},${(0.8 + 0.15 * day).toFixed(3)}`);
 }
 
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
@@ -69,6 +86,9 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   const countRef = useRef<HTMLSpanElement>(null);
   const captionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const nowRef = useRef<SVGLineElement>(null);
+  const topInkRef = useRef<HTMLDivElement>(null);
+  const captionInkRef = useRef<HTMLDivElement>(null);
+  const fineInkRef = useRef<HTMLDivElement>(null);
   const nowRefSide = useRef<SVGLineElement>(null);
 
   const rendererRef = useRef<LiteRenderer | null>(null);
@@ -86,7 +106,11 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
         rides = await loadAllRides(sources.date).catch(() => null);
       }
       rides ??= await loadSampleRides(sources.tripsUrl, startMs);
-      if (!dead) setData({ stats, manhattan, rides, startMs });
+      const outline = await fetch('/data/manhattan-outline.json')
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => (j?.rings ?? null) as Outline | null)
+        .catch(() => null);
+      if (!dead) setData({ stats, manhattan, rides, startMs, outline });
     })().catch(e => !dead && setError(String(e?.message ?? e)));
     return () => { dead = true; };
   }, [day, ridesMode]);
@@ -109,6 +133,11 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     return {
       keys: liteKeyframes(data.stats, data.startMs),
       captions: liteCaptions(data.stats),
+      light: (() => {
+        const keys = liteKeyframes(data.stats, data.startMs);
+        const sun = sunTimes(data.stats.date);
+        return lightPlan(keys, sun.sunrise, sun.sunset);
+      })(),
     };
   }, [data]);
 
@@ -128,7 +157,12 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     c.prevT = t;
     if (!paint) return;
 
-    r.present();
+    const dayFrac = dayFracAt(story.light, t);
+    const rising = story.light.setT === null || t < (story.light.riseT ?? 0) + (story.light.setT - (story.light.riseT ?? 0)) / 2;
+    r.present(dayFrac, rising);
+    setInk(topInkRef.current, inkDayAt(dayFrac, 0.12));
+    setInk(captionInkRef.current, inkDayAt(dayFrac, 0.8));
+    setInk(fineInkRef.current, inkDayAt(dayFrac, 0.97));
     const d = driftAt(t);
     if (driftRef.current) driftRef.current.style.transform = `scale(${d.scale.toFixed(4)}) rotate(${d.rotateDeg.toFixed(3)}deg)`;
     if (dimRef.current) dimRef.current.style.opacity = dimAt(t).toFixed(3);
@@ -151,7 +185,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   useEffect(() => {
     if (!data || !size || !canvasRef.current || size.w < 10 || size.h < 10) return;
     const dpr = record ? 1 : Math.min(2, window.devicePixelRatio || 1);
-    rendererRef.current = new LiteRenderer(canvasRef.current, data.rides, { width: size.w, height: size.h, dpr });
+    rendererRef.current = new LiteRenderer(canvasRef.current, data.rides, { width: size.w, height: size.h, dpr }, data.outline);
     clock.current.prevT = -1;
     clock.current.frame = -1;
     return () => { rendererRef.current = null; };
@@ -238,29 +272,31 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       </div>
       <div ref={dimRef} className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: 0 }} />
 
-      <div className="pointer-events-none absolute inset-0" style={{ textShadow: '0 1px 10px rgba(0,0,0,0.8)' }}>
-        <div className="absolute flex flex-col" style={{ top: '6cqmin', left: '6cqmin', gap: '1.4cqmin' }}>
-          <div className="font-semibold uppercase" style={{ fontSize: '2.55cqmin', letterSpacing: '0.18em', color: 'rgba(255,255,255,0.68)' }}>
+      <div className="pointer-events-none absolute inset-0">
+        <div ref={topInkRef} className="absolute flex flex-col" style={{ ...INK_NIGHT, top: '6cqmin', left: '6cqmin', gap: '1.4cqmin', color: 'rgb(var(--ink))', textShadow: '0 1px 10px rgba(var(--halo))' }}>
+          <div className="font-semibold uppercase" style={{ fontSize: '2.55cqmin', letterSpacing: '0.18em', color: 'rgba(var(--ink),0.68)' }}>
             One day of Citi Bike{data?.manhattan ? ' · Manhattan' : ''}
           </div>
           <div ref={clockRef} className="font-extrabold tabular-nums leading-none" style={{ fontSize: '10.6cqmin', letterSpacing: '-0.01em' }}>
             {null}
           </div>
-          <div ref={counterRef} className="font-medium" style={{ fontSize: '3.7cqmin', color: 'rgba(255,255,255,0.88)', opacity: 0 }}>
-            <span ref={countRef} className="font-bold tabular-nums text-white" /> bikes moving
+          <div ref={counterRef} className="font-medium" style={{ fontSize: '3.7cqmin', color: 'rgba(var(--ink),0.88)', opacity: 0 }}>
+            <span ref={countRef} className="font-bold tabular-nums" style={{ color: 'rgb(var(--ink))' }} /> bikes moving
           </div>
         </div>
 
+        <div ref={captionInkRef} className="absolute inset-0" style={{ ...INK_NIGHT, color: 'rgb(var(--ink))' }}>
         {story?.captions.filter(c => c.id !== 'card').map(c => (
           <div
             key={c.id}
             ref={el => { captionRefs.current[c.id] = el; }}
             className="absolute left-0 right-0 text-center font-semibold"
-            style={{ bottom: '16.7cqh', padding: '0 6.5cqmin', fontSize: '5.3cqmin', lineHeight: 1.2, opacity: 0, textShadow: '0 1px 12px rgba(0,0,0,0.85)' }}
+            style={{ bottom: '16.7cqh', padding: '0 6.5cqmin', fontSize: '5.3cqmin', lineHeight: 1.2, opacity: 0, textShadow: '0 1px 12px rgba(var(--halo))' }}
           >
             {c.lines[0]}
           </div>
         ))}
+        </div>
 
         {card && (
           <div
@@ -276,7 +312,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
           </div>
         )}
 
-        <div className="absolute left-0 right-0 text-center" style={{ bottom: '3.7cqmin', fontSize: '2.3cqmin', color: 'rgba(255,255,255,0.62)', padding: '0 4cqmin' }}>
+        <div ref={fineInkRef} className="absolute left-0 right-0 text-center" style={{ ...INK_NIGHT, bottom: '3.7cqmin', fontSize: '2.3cqmin', color: 'rgba(var(--ink),0.62)', padding: '0 4cqmin' }}>
           {fine}
         </div>
       </div>

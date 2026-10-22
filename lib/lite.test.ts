@@ -1,5 +1,6 @@
 import { decodeCbr1, packJsonTrips, toX } from '@/lib/rides';
-import { liteKeyframes, liteCaptions, hourAt, scopeToManhattan, LITE_SECONDS, clockLabel } from '@/lib/timeline';
+import { liteKeyframes, liteCaptions, hourAt, scopeToManhattan, LITE_SECONDS, clockLabel, lightPlan, dayFracAt, inkDayAt, timeForHour } from '@/lib/timeline';
+import { sunTimes } from '@/lib/sun';
 import type { DayStats } from '@/lib/story';
 
 const start = Date.UTC(2026, 8, 23, 4); // midnight in New York (EDT)
@@ -77,5 +78,31 @@ describe('lite rides', () => {
     const set = packJsonTrips([{ vendor_type: 'classic_bike', path: [[-73.98, 40.75, start + 1000], [-73.97, 40.76, start + 61000]] }], start);
     expect(set.count).toBe(1);
     expect(Array.from(set.ts)).toEqual([1, 61]);
+  });
+});
+
+describe('light', () => {
+  it('turns day at sunrise and night at sunset', () => {
+    const keys = liteKeyframes(stats, start);
+    const plan = lightPlan(keys, 6.8, 18.9);
+    expect(plan.riseT).not.toBeNull();
+    expect(plan.setT).not.toBeNull();
+    expect(dayFracAt(plan, 1.0)).toBe(0);
+    expect(dayFracAt(plan, (plan.riseT! + plan.setT!) / 2)).toBe(1);
+    expect(dayFracAt(plan, 9.5)).toBe(0);
+    expect(hourAt(keys, timeForHour(keys, 12)!)).toBeCloseTo(12, 3);
+  });
+
+  it('flips words when the scan line passes them', () => {
+    expect(inkDayAt(0.5, 0.2)).toBe(0);  // line at mid-frame, words near the top: still night
+    expect(inkDayAt(0.5, 0.9)).toBe(1);  // words near the bottom: day
+  });
+
+  it('finds sunrise and sunset for a September day', () => {
+    const sun = sunTimes('2026-09-23');
+    expect(sun.sunrise).toBeGreaterThan(6.5);
+    expect(sun.sunrise).toBeLessThan(7.2);
+    expect(sun.sunset).toBeGreaterThan(18.6);
+    expect(sun.sunset).toBeLessThan(19.2);
   });
 });

@@ -2,6 +2,8 @@
 
 Every Citi Bike ride in Manhattan on one day, in a 10-second loop: the quiet night, the wake-up, rush hour, then the day's total. Made to be shared as a short clip on X, LinkedIn, Threads and Substack, and to load fast on a phone.
 
+The light follows the sun. Night is a TRON-like grid of cyan streets, a neon coastline and orange light trails. At sunrise a glowing scan line sweeps up the frame and leaves a paper-white day behind it, with grey streets and vivid trails; at sunset it sweeps back down. Sunrise and sunset come from the date (`lib/sun.ts`).
+
 It is a plain 2D canvas. There's no map library, no 3D buildings and no scrubber: the day's own routes, drawn faintly, are the map. The full interactive version, with the map, places and filters, lives in [nyc-urban-mobility-dev](https://github.com/parvezk/nyc-urban-mobility-dev).
 
 ## Run it
@@ -45,13 +47,15 @@ node scripts/sync-data.mjs ../nyc-urban-mobility-dev
 | `<date>/day-stats.json` | the day in numbers, plus bikes in motion per minute |
 | `<date>/trips.json` | the routed 6,000-ride sample |
 | `<date>/rides/` | every ride, hourly `cbr1` binary chunks (see `lib/rides.ts`) |
+| `manhattan-outline.json` | the island's outline (NYC borough boundary, simplified) |
 
 ## Code
 
 | Path | What |
 |:---|:---|
 | `lib/timeline.ts` | the 10-second beat sheet: clip seconds to hour of day, captions |
-| `lib/renderer.ts` | canvas renderer: ghost network, fading trails, bike heads |
+| `lib/renderer.ts` | canvas renderer: night and day maps, fading trails, bike heads, the scan-line wipe |
+| `lib/sun.ts` | sunrise and sunset in New York for a date |
 | `lib/rides.ts` | loads the sample JSON or the cbr1 chunks into flat typed arrays |
 | `components/LitePlayer.tsx` | the page: frame loop, words on screen, recorder hooks |
 | `components/LiteStatsCard.tsx` | the compact day-in-numbers card |

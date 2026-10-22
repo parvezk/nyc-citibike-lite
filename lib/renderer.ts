@@ -1,9 +1,15 @@
 // Canvas 2D renderer for the lite view. No map library: the day's own routes,
-// drawn faintly, are the map, and the moving bikes are drawn on top.
+// drawn thinly, are the streets, the island's outline frames them, and the
+// moving bikes are drawn on top.
 //
-// The story is Manhattan only, framed so the island runs the length of the
-// frame. Trails accumulate on an offscreen canvas: each frame fades it a
-// little and adds what every bike rode since the last frame.
+// The light follows the sun. Night is a TRON-like grid: cyan streets and
+// outline, orange light trails added on black. Day is paper: grey streets,
+// a soft island, vivid trails painted on. At sunrise and sunset a glowing
+// scan line sweeps across the frame and swaps one for the other.
+//
+// Trails accumulate on one offscreen canvas (each frame fades it a little and
+// adds what every bike rode since the last frame). Night shows it as light;
+// day recolours it and paints it over the paper.
 
 import { toX, toY, type RideSet } from './rides';
 
@@ -13,16 +19,37 @@ export interface StageSize {
   dpr: number;
 }
 
-export interface RendererOptions {
-  streak?: [number, number, number];
-}
+/** Outer rings of the island outline, [lng, lat]. */
+export type Outline = Array<Array<[number, number]>>;
 
-const BG = '#0b0c0f';
+type RGB = [number, number, number];
+
+const NIGHT = {
+  bg: '#05070a',
+  street: [64, 196, 255] as RGB,        // cyan, TRON
+  coast: [80, 225, 255] as RGB,
+  trail: [255, 150, 48] as RGB,         // orange light
+  head: [215, 250, 255] as RGB,
+};
+
+const DAY = {
+  bg: '#efeee9',                        // paper, around the island
+  land: '#fbfaf7',
+  street: [138, 146, 158] as RGB,       // soft grey
+  coast: [96, 104, 116] as RGB,
+  trail: [255, 84, 18] as RGB,          // vivid orange-red
+  head: [120, 20, 60] as RGB,
+};
+
+const SCAN = [94, 234, 255] as RGB;
+
 // Midtown, ~13.7 km along the long side of the frame.
 const CENTER_LNG = -73.989;
 const CENTER_LAT = 40.748;
 const SPAN_M = 13714;
 const ANCHOR_Y = 0.54;
+
+const rgba = ([r, g, b]: RGB, a: number) => `rgba(${r},${g},${b},${a.toFixed(4)})`;
 
 export class LiteRenderer {
   readonly size: StageSize;
@@ -32,18 +59,22 @@ export class LiteRenderer {
   private t0: Float32Array;
   private t1: Float32Array;
   private inFrame: Uint8Array;
-  private ghost: HTMLCanvasElement;
+  private project: (lng: number, lat: number) => [number, number];
+  private ghostNight: HTMLCanvasElement;
+  private ghostDay: HTMLCanvasElement;
   private trailCanvas: HTMLCanvasElement;
+  private tint: HTMLCanvasElement;
   private trail: CanvasRenderingContext2D;
   private out: CanvasRenderingContext2D;
   private heads: number[] = [];
+  private density: number;
+  private scale: number;
   private streakCss: string;
   private streakOp: GlobalCompositeOperation;
-  private headCss: string;
   private streakWidth: number;
   private headRadius: number;
 
-  constructor(canvas: HTMLCanvasElement, rides: RideSet, size: StageSize, opts: RendererOptions = {}) {
+  constructor(canvas: HTMLCanvasElement, rides: RideSet, size: StageSize, outline: Outline | null) {
     this.size = size;
     this.rides = rides;
     const { width: W, height: H, dpr } = size;
@@ -58,6 +89,11 @@ export class LiteRenderer {
     const k = (Math.max(W, H) / SPAN_M) * (square ? 1.3 : 1);
     const x0 = toX(CENTER_LNG), y0 = toY(CENTER_LAT);
     const cx = x0 * cb - y0 * sb, cy = x0 * sb + y0 * cb;
+    const fromMetres = (x: number, y: number): [number, number] => [
+      W / 2 + (x * cb - y * sb - cx) * k,
+      H * ANCHOR_Y - (x * sb + y * cb - cy) * k,
+    ];
+    this.project = (lng, lat) => fromMetres(toX(lng), toY(lat));
 
     // Project once into screen space; the camera never moves (the drift is a
     // CSS transform on the canvas).
@@ -65,9 +101,9 @@ export class LiteRenderer {
     this.rx = new Float32Array(n);
     this.ry = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      const x = rides.xm[i], y = rides.ym[i];
-      this.rx[i] = W / 2 + (x * cb - y * sb - cx) * k;
-      this.ry[i] = H * ANCHOR_Y - (x * sb + y * cb - cy) * k;
+      const [px, py] = fromMetres(rides.xm[i], rides.ym[i]);
+      this.rx[i] = px;
+      this.ry[i] = py;
     }
     this.t0 = new Float32Array(rides.count);
     this.t1 = new Float32Array(rides.count);
@@ -75,7 +111,6 @@ export class LiteRenderer {
       this.t0[r] = rides.ts[rides.offsets[r]];
       this.t1[r] = rides.ts[rides.offsets[r + 1] - 1];
     }
-
     this.inFrame = new Uint8Array(rides.count);
     for (let r = 0; r < rides.count; r++) this.inFrame[r] = this.visible(r) ? 1 : 0;
 
@@ -85,32 +120,28 @@ export class LiteRenderer {
       c.height = Math.round(H * dpr);
       return c;
     };
-    this.ghost = mk();
+    this.ghostNight = mk();
+    this.ghostDay = mk();
     this.trailCanvas = mk();
+    this.tint = mk();
     this.trail = this.trailCanvas.getContext('2d')!;
     this.trail.setTransform(dpr, 0, 0, dpr, 0, 0);
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     this.out = canvas.getContext('2d', { alpha: false })!;
 
-    // A full day has ~30x the sample's rides: fainter strokes keep the same
-    // overall brightness instead of burning out to white.
-    const density = Math.min(1, 6000 / Math.max(1, rides.count));
-    const [r, g, b] = opts.streak ?? [255, 166, 72];
-    // The sample adds light (busy streets glow white-hot). Every ride would
-    // burn the whole island to white that way, so it paints over instead and
-    // busy streets settle at the streak colour.
-    this.streakOp = density < 1 ? 'source-over' : 'lighter';
-    const a = density < 1 ? 0.07 : 0.6;
-    this.streakCss = `rgba(${r},${g},${b},${a.toFixed(3)})`;
-    this.headCss = density < 1
-      ? `rgba(${r},${Math.min(255, g + 40)},${Math.min(255, b + 50)},0.55)`
-      : `rgba(${Math.min(255, r + 60)},${Math.min(255, g + 70)},${Math.min(255, b + 90)},0.95)`;
-    const scale = Math.max(W, H) / 768;  // sizes were tuned on a 432x768 frame
-    this.streakWidth = (density < 1 ? 1.3 : 1.7) * scale;
-    this.headRadius = (density < 1 ? 0.9 : 1.5) * scale;
+    // A full day has ~30x the sample's rides. The sample adds light (busy
+    // streets glow white-hot); every ride would burn the island to white that
+    // way, so it paints over instead and busy streets settle at the colour.
+    this.density = Math.min(1, 6000 / Math.max(1, rides.count));
+    this.scale = Math.max(W, H) / 768;  // sizes were tuned on a 432x768 frame
+    this.streakOp = this.density < 1 ? 'source-over' : 'lighter';
+    this.streakCss = rgba(NIGHT.trail, this.density < 1 ? 0.07 : 0.6);
+    this.streakWidth = (this.density < 1 ? 1.3 : 1.7) * this.scale;
+    this.headRadius = (this.density < 1 ? 0.9 : 1.5) * this.scale;
 
-    this.drawGhost(density, scale);
+    this.drawGhost(this.ghostNight, 'night', outline);
+    this.drawGhost(this.ghostDay, 'day', outline);
   }
 
   get rideCount(): number {
@@ -125,19 +156,50 @@ export class LiteRenderer {
     return !(off(this.rx[i], this.ry[i]) && off(this.rx[j], this.ry[j]));
   }
 
-  // Every route of the day, faintly: the bike network as a ghost map. The
-  // full day is thinned to ~12k rides; more adds nothing but noise.
-  private drawGhost(density: number, scale: number) {
+  private tracePath(g: CanvasRenderingContext2D, ring: Array<[number, number]>) {
+    ring.forEach(([lng, lat], i) => {
+      const [x, y] = this.project(lng, lat);
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    });
+    g.closePath();
+  }
+
+  // The static map: background, island, and every street the day's rides
+  // used, thinned to ~12k rides (more adds nothing but noise).
+  private drawGhost(c: HTMLCanvasElement, mode: 'night' | 'day', outline: Outline | null) {
     const { dpr } = this.size;
-    const g = this.ghost.getContext('2d')!;
-    g.fillStyle = BG;
-    g.fillRect(0, 0, this.ghost.width, this.ghost.height);
+    const g = c.getContext('2d')!;
+    const night = mode === 'night';
+    const theme = night ? NIGHT : DAY;
+    g.fillStyle = theme.bg;
+    g.fillRect(0, 0, c.width, c.height);
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.globalCompositeOperation = 'lighter';
-    const stride = density < 1 ? Math.max(1, Math.floor(this.rides.count / 12000)) : 1;
+    const s = this.scale;
+
+    if (outline && !night) {
+      g.fillStyle = DAY.land;
+      g.beginPath();
+      for (const ring of outline) this.tracePath(g, ring);
+      g.fill();
+    }
+
+    if (night) {
+      // A faint TRON grid under everything.
+      g.strokeStyle = rgba(NIGHT.street, 0.05);
+      g.lineWidth = 0.6 * s;
+      const step = 34 * s;
+      g.beginPath();
+      for (let x = (this.size.width % step) / 2; x < this.size.width; x += step) { g.moveTo(x, 0); g.lineTo(x, this.size.height); }
+      for (let y = (this.size.height % step) / 2; y < this.size.height; y += step) { g.moveTo(0, y); g.lineTo(this.size.width, y); }
+      g.stroke();
+    }
+
+    const stride = this.density < 1 ? Math.max(1, Math.floor(this.rides.count / 12000)) : 1;
     const shown = Math.ceil(this.rides.count / stride);
-    g.strokeStyle = `rgba(120,138,168,${((density < 1 ? 0.011 : 0.036) * Math.min(1, Math.pow(6000 / shown, 0.6))).toFixed(4)})`;
-    g.lineWidth = 0.8 * scale;
+    const base = night ? (this.density < 1 ? 0.012 : 0.024) : (this.density < 1 ? 0.03 : 0.05);
+    g.globalCompositeOperation = night ? 'lighter' : 'multiply';
+    g.strokeStyle = rgba(theme.street, base * Math.min(1, Math.pow(6000 / shown, 0.6)));
+    g.lineWidth = (night ? 0.8 : 0.7) * s;
     const { offsets } = this.rides;
     for (let r = 0; r < this.rides.count; r += stride) {
       if (!this.inFrame[r]) continue;
@@ -146,6 +208,28 @@ export class LiteRenderer {
       g.moveTo(this.rx[a], this.ry[a]);
       for (let i = a + 1; i < b; i++) g.lineTo(this.rx[i], this.ry[i]);
       g.stroke();
+    }
+    g.globalCompositeOperation = 'source-over';
+
+    if (outline) {
+      g.beginPath();
+      for (const ring of outline) this.tracePath(g, ring);
+      if (night) {
+        // Neon coastline: a wide soft glow, then a crisp core.
+        g.strokeStyle = rgba(NIGHT.coast, 0.35);
+        g.lineWidth = 1.2 * s;
+        g.shadowColor = rgba(NIGHT.coast, 0.9);
+        g.shadowBlur = 10 * s;
+        g.stroke();
+        g.shadowBlur = 0;
+        g.strokeStyle = rgba(NIGHT.coast, 0.75);
+        g.lineWidth = 0.7 * s;
+        g.stroke();
+      } else {
+        g.strokeStyle = rgba(DAY.coast, 0.55);
+        g.lineWidth = 0.9 * s;
+        g.stroke();
+      }
     }
   }
 
@@ -203,24 +287,106 @@ export class LiteRenderer {
     g.globalCompositeOperation = 'source-over';
   }
 
-  present() {
-    const { dpr } = this.size;
+  private drawHeads(color: RGB, alpha: number, radius: number) {
     const o = this.out;
-    o.setTransform(1, 0, 0, 1, 0, 0);
-    o.globalCompositeOperation = 'source-over';
-    o.drawImage(this.ghost, 0, 0);
-    o.globalCompositeOperation = 'lighter';
-    o.drawImage(this.trailCanvas, 0, 0);
-    o.setTransform(dpr, 0, 0, dpr, 0, 0);
-    o.fillStyle = this.headCss;
-    const rad = this.headRadius;
+    o.fillStyle = rgba(color, alpha);
     const h = this.heads;
     o.beginPath();
     for (let i = 0; i < h.length; i += 2) {
-      o.moveTo(h[i] + rad, h[i + 1]);
-      o.arc(h[i], h[i + 1], rad, 0, Math.PI * 2);
+      o.moveTo(h[i] + radius, h[i + 1]);
+      o.arc(h[i], h[i + 1], radius, 0, Math.PI * 2);
     }
     o.fill();
+  }
+
+  private paintNight() {
+    const o = this.out;
+    o.setTransform(1, 0, 0, 1, 0, 0);
+    o.drawImage(this.ghostNight, 0, 0);
+    o.globalCompositeOperation = 'lighter';
+    o.drawImage(this.trailCanvas, 0, 0);
+    o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
+    this.drawHeads(NIGHT.head, this.density < 1 ? 0.55 : 0.95, this.headRadius);
     o.globalCompositeOperation = 'source-over';
+  }
+
+  private paintDay() {
+    const o = this.out;
+    // Recolour the trails: same shapes and fade, day ink.
+    const t = this.tint.getContext('2d')!;
+    t.globalCompositeOperation = 'copy';
+    t.drawImage(this.trailCanvas, 0, 0);
+    t.globalCompositeOperation = 'source-in';
+    t.fillStyle = rgba(DAY.trail, 1);
+    t.fillRect(0, 0, this.tint.width, this.tint.height);
+    o.setTransform(1, 0, 0, 1, 0, 0);
+    o.drawImage(this.ghostDay, 0, 0);
+    o.globalCompositeOperation = 'multiply';
+    o.drawImage(this.tint, 0, 0);
+    o.globalCompositeOperation = 'source-over';
+    o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
+    this.drawHeads(DAY.head, this.density < 1 ? 0.45 : 0.8, this.headRadius * 0.85);
+  }
+
+  // The scan line, with a band of TRON grid trailing on its night side.
+  private paintScan(y: number, nightAbove: boolean) {
+    const o = this.out;
+    const { width: W } = this.size;
+    const s = this.scale;
+    o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
+    const band = 70 * s;
+    const dir = nightAbove ? -1 : 1;
+    const grad = o.createLinearGradient(0, y, 0, y + dir * band);
+    grad.addColorStop(0, rgba(SCAN, 0.28));
+    grad.addColorStop(1, rgba(SCAN, 0));
+    o.globalCompositeOperation = 'lighter';
+    o.strokeStyle = grad;
+    o.lineWidth = 0.8 * s;
+    const step = 11 * s;
+    o.beginPath();
+    for (let x = 0; x <= W; x += step) { o.moveTo(x, y); o.lineTo(x, y + dir * band); }
+    for (let d = step; d < band; d += step) { o.moveTo(0, y + dir * d); o.lineTo(W, y + dir * d); }
+    o.stroke();
+    o.globalCompositeOperation = 'source-over';
+    o.strokeStyle = rgba(SCAN, 1);
+    o.shadowColor = rgba(SCAN, 1);
+    o.shadowBlur = 18 * s;
+    o.lineWidth = 2.2 * s;
+    o.beginPath();
+    o.moveTo(0, y);
+    o.lineTo(W, y);
+    o.stroke();
+    o.shadowBlur = 0;
+    o.strokeStyle = 'rgba(255,255,255,0.95)';
+    o.lineWidth = 0.9 * s;
+    o.stroke();
+  }
+
+  /**
+   * dayFrac: share of the frame, from the bottom up, that is in daylight.
+   * nightAbove: true while the line moves up (sunrise), so the grid trails
+   * into the night above it; false at sunset.
+   */
+  present(dayFrac = 0, rising = true) {
+    const o = this.out;
+    const { width: W, height: H, dpr } = this.size;
+    if (dayFrac <= 0.0005) {
+      this.paintNight();
+      return;
+    }
+    if (dayFrac >= 0.9995) {
+      this.paintDay();
+      return;
+    }
+    const y = H * (1 - dayFrac);
+    this.paintNight();
+    o.save();
+    o.setTransform(1, 0, 0, 1, 0, 0);
+    o.beginPath();
+    o.rect(0, y * dpr, W * dpr, (H - y) * dpr);
+    o.clip();
+    this.paintDay();
+    o.restore();
+    this.paintScan(y, rising);
   }
 }
