@@ -23,7 +23,7 @@ function Panel({ data, hour, night }: { data: Loaded; hour: number; night: boole
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     if (!ref.current) return;
-    const r = new LiteRenderer(ref.current, data.rides, { width: 384, height: 860, dpr: 1 }, data.outline);
+    const r = new LiteRenderer(ref.current, data.rides, { width: 352, height: 800, dpr: 1 }, data.outline);
     // Fifteen minutes of story up to the moment, as the video draws it.
     const steps = 360, span = 15 / 60, dh = span / steps;
     r.clear();
@@ -35,7 +35,7 @@ function Panel({ data, hour, night }: { data: Loaded; hour: number; night: boole
     r.present(night ? 0 : 1, true);
     (window as unknown as { __panels?: number }).__panels = ((window as unknown as { __panels?: number }).__panels ?? 0) + 1;
   }, [data, hour, night]);
-  return <canvas ref={ref} style={{ width: 384, height: 860, display: 'block', borderRadius: 18 }} />;
+  return <canvas ref={ref} style={{ width: 352, height: 800, display: 'block', borderRadius: 18 }} />;
 }
 
 export default function Poster() {
@@ -68,7 +68,7 @@ export default function Poster() {
   }, [data]);
 
   // Chart geometry.
-  const cx0 = 140, cw = W - 280, cy0 = 1940, ch = 440;
+  const cx0 = 140, cw = W - 280, cy0 = 1990, ch = 400;
   const max = data ? data.stats.peakActive / 0.8 : 1;
   const x = (h: number) => cx0 + ((h - CHART_FROM_H) / (CHART_TO_H - CHART_FROM_H)) * cw;
   const y = (v: number) => cy0 + ch - (v / max) * ch;
@@ -91,13 +91,13 @@ export default function Poster() {
       </div>
 
       {data && view && (
-        <div style={{ position: 'absolute', left: 140, right: 140, top: 640, display: 'flex', justifyContent: 'space-between' }}>
+        <div style={{ position: 'absolute', left: 140, right: 140, top: 730, display: 'flex', justifyContent: 'space-between' }}>
           {view.moments.map(m => (
             <div key={m.hour}>
               <Panel data={data} hour={m.hour} night={m.night} />
-              <div style={{ marginTop: 22, fontSize: 34, fontWeight: 600, color: '#555b66' }}>{m.label} · {clockLabel(m.hour)}</div>
+              <div style={{ marginTop: 22, fontSize: 34, fontWeight: 600, color: '#555b66' }}>{m.label}</div>
               <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1.1 }}>{fmt(m.active)}</div>
-              <div style={{ fontSize: 30, color: '#555b66' }}>bikes moving</div>
+              <div style={{ fontSize: 30, color: '#555b66' }}>bikes moving at {clockLabel(m.hour)}</div>
             </div>
           ))}
         </div>
