@@ -1,0 +1,154 @@
+{
+  "date": "2026-09-23",
+  "rides": 124300,
+  "zone": {
+    "name": "Midtown",
+    "detail": "34th St to 59th St",
+    "bearingDeg": 29,
+    "origin": [
+      -73.97,
+      40.73
+    ],
+    "alongFromM": 1155,
+    "alongToM": 3203
+  },
+  "windows": [
+    {
+      "id": "am",
+      "label": "7–10 AM",
+      "from": 7,
+      "to": 10,
+      "arrivals": 6645,
+      "departures": 4610,
+      "in": 4318,
+      "out": 2255,
+      "net": 2035
+    },
+    {
+      "id": "pm",
+      "label": "4–7 PM",
+      "from": 16,
+      "to": 19,
+      "arrivals": 6291,
+      "departures": 8474,
+      "in": 3246,
+      "out": 5438,
+      "net": -2183
+    }
+  ],
+  "bands": {
+    "Below Houston St": {
+      "am": {
+        "arrivals": 4809,
+        "departures": 3624,
+        "in": 2896,
+        "out": 1697,
+        "net": 1185
+      },
+      "pm": {
+        "arrivals": 5641,
+        "departures": 6678,
+        "in": 2993,
+        "out": 3984,
+        "net": -1037
+      }
+    },
+    "14th St – 34th St": {
+      "am": {
+        "arrivals": 6278,
+        "departures": 5215,
+        "in": 3973,
+        "out": 2875,
+        "net": 1063
+      },
+      "pm": {
+        "arrivals": 7103,
+        "departures": 7981,
+        "in": 4320,
+        "out": 5179,
+        "net": -878
+      }
+    },
+    "Midtown (34th St – 59th St)": {
+      "am": {
+        "arrivals": 6645,
+        "departures": 4610,
+        "in": 4318,
+        "out": 2255,
+        "net": 2035
+      },
+      "pm": {
+        "arrivals": 6291,
+        "departures": 8474,
+        "in": 3246,
+        "out": 5438,
+        "net": -2183
+      }
+    },
+    "59th St – 110th St": {
+      "am": {
+        "arrivals": 3061,
+        "departures": 4304,
+        "in": 1260,
+        "out": 2475,
+        "net": -1243
+      },
+      "pm": {
+        "arrivals": 5386,
+        "departures": 4488,
+        "in": 2901,
+        "out": 1994,
+        "net": 898
+      }
+    },
+    "Outside Manhattan": {
+      "am": {
+        "arrivals": 585,
+        "departures": 2550,
+        "in": 583,
+        "out": 2548,
+        "net": -1965
+      },
+      "pm": {
+        "arrivals": 2707,
+        "departures": 1401,
+        "in": 2701,
+        "out": 1396,
+        "net": 1306
+      }
+    },
+    "Houston St – 14th St": {
+      "am": {
+        "arrivals": 2774,
+        "departures": 4116,
+        "in": 1582,
+        "out": 2917,
+        "net": -1342
+      },
+      "pm": {
+        "arrivals": 5646,
+        "departures": 4549,
+        "in": 4034,
+        "out": 2912,
+        "net": 1097
+      }
+    },
+    "Above 110th St": {
+      "am": {
+        "arrivals": 1344,
+        "departures": 1573,
+        "in": 486,
+        "out": 700,
+        "net": -229
+      },
+      "pm": {
+        "arrivals": 2179,
+        "departures": 2006,
+        "in": 1022,
+        "out": 829,
+        "net": 173
+      }
+    }
+  },
+  "method": "Arrivals: rides that end in the zone during the window. Departures: rides that start there. Net = arrivals - departures. in / out: rides that cross the zone edge (start outside, end inside / the reverse), by end / start time. Rides are kept if they start or end in Manhattan."
+}

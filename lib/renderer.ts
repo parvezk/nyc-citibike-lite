@@ -13,6 +13,19 @@
 
 import { toX, toY, type RideSet } from './rides';
 
+/** A band of the island between two cross streets, to light up. */
+export interface Zone {
+  bearingDeg: number;   // avenues, degrees east of north
+  alongFromM: number;   // metres along the avenues from the rides origin
+  alongToM: number;
+}
+
+export interface Highlight {
+  amount: number;       // 0..1
+  label: string;        // "MIDTOWN"
+  day: number;          // 0 night ink, 1 day ink
+}
+
 export interface StageSize {
   width: number;   // CSS px
   height: number;  // CSS px
@@ -29,7 +42,7 @@ const NIGHT = {
   street: [64, 196, 255] as RGB,        // cyan, TRON
   coast: [80, 225, 255] as RGB,
   trail: [255, 150, 48] as RGB,         // orange light
-  head: [215, 250, 255] as RGB,
+  head: [255, 238, 205] as RGB,        // warm white: the same light, hotter
 };
 
 const DAY = {
@@ -38,10 +51,19 @@ const DAY = {
   street: [138, 146, 158] as RGB,       // soft grey
   coast: [96, 104, 116] as RGB,
   trail: [255, 84, 18] as RGB,          // vivid orange-red
-  head: [120, 20, 60] as RGB,
+  head: [150, 24, 6] as RGB,           // deep red: the same ink, darker
 };
 
 const SCAN = [94, 234, 255] as RGB;
+
+// Across-the-avenues offset of the Hudson shore at Midtown, metres (negative
+// is west of the rides origin).
+const WEST_SHORE_ACROSS_M = -4150;
+
+// e-folding time of a trail, in story minutes (a ride's last ~5 minutes show).
+const TRAIL_MINUTES = 2;
+// The night streets are a basemap, not traffic: dimmer than any trail.
+const NIGHT_STREET_DIM = 0.45;
 
 // Midtown, ~13.7 km along the long side of the frame.
 const CENTER_LNG = -73.989;
@@ -73,6 +95,10 @@ export class LiteRenderer {
   private streakOp: GlobalCompositeOperation;
   private streakWidth: number;
   private headRadius: number;
+  private fromMetres: (x: number, y: number) => [number, number];
+  private outline: Outline | null;
+  private landscape: boolean;
+  private font: string;
 
   constructor(canvas: HTMLCanvasElement, rides: RideSet, size: StageSize, outline: Outline | null) {
     this.size = size;
@@ -84,16 +110,23 @@ export class LiteRenderer {
     const bearing = ((landscape ? -61 : 29) * Math.PI) / 180;
     const cb = Math.cos(bearing);
     const sb = Math.sin(bearing);
-    // CSS px per metre. A square frame zooms in a little so the island fills it.
+    // CSS px per metre. A wide frame zooms out so the island fits between the
+    // words at the top and the chart at the bottom; a square frame sits the
+    // island a little lower for the same reason.
     const square = Math.abs(W - H) < 0.15 * Math.max(W, H);
-    const k = (Math.max(W, H) / SPAN_M) * (square ? 1.3 : 1);
+    const k = (Math.max(W, H) / SPAN_M) * (landscape ? 0.8 : 1);
+    const anchorY = square ? 0.6 : landscape ? 0.5 : ANCHOR_Y;
     const x0 = toX(CENTER_LNG), y0 = toY(CENTER_LAT);
     const cx = x0 * cb - y0 * sb, cy = x0 * sb + y0 * cb;
     const fromMetres = (x: number, y: number): [number, number] => [
       W / 2 + (x * cb - y * sb - cx) * k,
-      H * ANCHOR_Y - (x * sb + y * cb - cy) * k,
+      H * anchorY - (x * sb + y * cb - cy) * k,
     ];
     this.project = (lng, lat) => fromMetres(toX(lng), toY(lat));
+    this.fromMetres = fromMetres;
+    this.outline = outline;
+    this.landscape = landscape;
+    this.font = getComputedStyle(canvas).fontFamily || 'system-ui, sans-serif';
 
     // Project once into screen space; the camera never moves (the drift is a
     // CSS transform on the canvas).
@@ -135,10 +168,12 @@ export class LiteRenderer {
     // way, so it paints over instead and busy streets settle at the colour.
     this.density = Math.min(1, 6000 / Math.max(1, rides.count));
     this.scale = Math.max(W, H) / 768;  // sizes were tuned on a 432x768 frame
-    this.streakOp = this.density < 1 ? 'source-over' : 'lighter';
-    this.streakCss = rgba(NIGHT.trail, this.density < 1 ? 0.07 : 0.6);
-    this.streakWidth = (this.density < 1 ? 1.3 : 1.7) * this.scale;
-    this.headRadius = (this.density < 1 ? 0.9 : 1.5) * this.scale;
+    // Trails add light, so a busy street glows brighter than a quiet one
+    // and 900 bikes look clearly thinner than 3,000.
+    this.streakOp = 'lighter';
+    this.streakCss = rgba(NIGHT.trail, this.density < 1 ? 0.2 : 0.6);
+    this.streakWidth = (this.density < 1 ? 1.5 : 1.7) * this.scale;
+    this.headRadius = (this.density < 1 ? 1.3 : 1.5) * this.scale;
 
     this.drawGhost(this.ghostNight, 'night', outline);
     this.drawGhost(this.ghostDay, 'day', outline);
@@ -196,7 +231,7 @@ export class LiteRenderer {
 
     const stride = this.density < 1 ? Math.max(1, Math.floor(this.rides.count / 12000)) : 1;
     const shown = Math.ceil(this.rides.count / stride);
-    const base = night ? (this.density < 1 ? 0.012 : 0.024) : (this.density < 1 ? 0.03 : 0.05);
+    const base = night ? (this.density < 1 ? 0.012 : 0.024) * NIGHT_STREET_DIM : (this.density < 1 ? 0.03 : 0.05);
     g.globalCompositeOperation = night ? 'lighter' : 'multiply';
     g.strokeStyle = rgba(theme.street, base * Math.min(1, Math.pow(6000 / shown, 0.6)));
     g.lineWidth = (night ? 0.8 : 0.7) * s;
@@ -241,13 +276,18 @@ export class LiteRenderer {
     this.heads = [];
   }
 
-  // Fade by clip time, so trails look the same at any frame rate.
-  fade(dtSeconds: number) {
+  // Fade by story time: a trail keeps roughly the last ten minutes of each
+  // ride, so what is on screen is the bikes moving now, whether the clock
+  // crawls or races, and a held clock holds the picture. `extraKeep` < 1
+  // fades faster (used to clear the hook after the cut).
+  fade(storyHours: number, extraKeep = 1) {
+    const keep = Math.exp(-(Math.max(0, storyHours) * 60) / TRAIL_MINUTES) * extraKeep;
+    if (keep >= 0.9999) return;
     const g = this.trail;
     g.save();
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.globalCompositeOperation = 'destination-out';
-    g.fillStyle = `rgba(0,0,0,${(1 - Math.pow(0.93, dtSeconds * 60)).toFixed(4)})`;
+    g.fillStyle = `rgba(0,0,0,${(1 - keep).toFixed(4)})`;
     g.fillRect(0, 0, this.trailCanvas.width, this.trailCanvas.height);
     g.restore();
   }
@@ -263,7 +303,9 @@ export class LiteRenderer {
     g.globalCompositeOperation = this.streakOp;
     g.strokeStyle = this.streakCss;
     g.lineWidth = this.streakWidth;
-    g.lineCap = 'round';
+    // Butt caps: consecutive frames' strokes meet without overlapping, so a
+    // held clock does not brighten the heads.
+    g.lineCap = 'butt';
     g.lineJoin = 'round';
     for (let r = 0; r < this.rides.count; r++) {
       if (!inFrame[r] || t0[r] > s1 || t1[r] < s0) continue;
@@ -306,7 +348,7 @@ export class LiteRenderer {
     o.globalCompositeOperation = 'lighter';
     o.drawImage(this.trailCanvas, 0, 0);
     o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
-    this.drawHeads(NIGHT.head, this.density < 1 ? 0.55 : 0.95, this.headRadius);
+    this.drawHeads(NIGHT.head, this.density < 1 ? 0.85 : 0.95, this.headRadius);
     o.globalCompositeOperation = 'source-over';
   }
 
@@ -325,7 +367,7 @@ export class LiteRenderer {
     o.drawImage(this.tint, 0, 0);
     o.globalCompositeOperation = 'source-over';
     o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
-    this.drawHeads(DAY.head, this.density < 1 ? 0.45 : 0.8, this.headRadius * 0.85);
+    this.drawHeads(DAY.head, this.density < 1 ? 0.75 : 0.8, this.headRadius * 0.9);
   }
 
   // The scan line, with a band of TRON grid trailing on its night side.
@@ -360,6 +402,79 @@ export class LiteRenderer {
     o.strokeStyle = 'rgba(255,255,255,0.95)';
     o.lineWidth = 0.9 * s;
     o.stroke();
+  }
+
+  // Screen point for (along, across) metres in the zone's frame.
+  private zonePoint(z: Zone, along: number, across: number): [number, number] {
+    const b = (z.bearingDeg * Math.PI) / 180;
+    return this.fromMetres(along * Math.sin(b) + across * Math.cos(b), along * Math.cos(b) - across * Math.sin(b));
+  }
+
+  private bandPath(g: CanvasRenderingContext2D, z: Zone) {
+    const far = 30000;
+    const pts = [
+      this.zonePoint(z, z.alongFromM, -far), this.zonePoint(z, z.alongFromM, far),
+      this.zonePoint(z, z.alongToM, far), this.zonePoint(z, z.alongToM, -far),
+    ];
+    g.beginPath();
+    pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.closePath();
+  }
+
+  /** Light up a band of the island, with a label beside it. */
+  drawHighlight(z: Zone, h: Highlight) {
+    if (h.amount <= 0.002 || !this.outline) return;
+    const o = this.out;
+    const { width: W, height: H, dpr } = this.size;
+    const s = this.scale;
+    const a = h.amount;
+    const ink = (alpha: number) => {
+      const v = Math.round(255 + (24 - 255) * h.day);
+      return `rgba(${v},${v},${v + Math.round(4 * h.day)},${(alpha * a).toFixed(4)})`;
+    };
+    o.save();
+    o.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Veil the rest of the island a little so the band stands out.
+    o.save();
+    o.beginPath();
+    for (const ring of this.outline) this.tracePath(o, ring);
+    o.clip();
+    o.beginPath();
+    o.rect(-W, -H, 3 * W, 3 * H);
+    this.bandPath(o, z);
+    o.fillStyle = h.day > 0.5 ? `rgba(239,238,233,${(0.55 * a).toFixed(4)})` : `rgba(0,0,0,${(0.5 * a).toFixed(4)})`;
+    o.fill('evenodd');
+    // The two cross streets.
+    o.strokeStyle = ink(0.95);
+    o.lineWidth = 1.6 * s;
+    o.setLineDash([5 * s, 4 * s]);
+    for (const along of [z.alongFromM, z.alongToM]) {
+      const [x0, y0] = this.zonePoint(z, along, -6000);
+      const [x1, y1] = this.zonePoint(z, along, 3000);
+      o.beginPath();
+      o.moveTo(x0, y0);
+      o.lineTo(x1, y1);
+      o.stroke();
+    }
+    o.restore();
+    o.setLineDash([]);
+
+    // The name sits just off the island's west shore (the Hudson is empty);
+    // in a wide frame, where the west shore is under the words, on the band.
+    const mid = (z.alongFromM + z.alongToM) / 2;
+    const [lx, ly] = this.zonePoint(z, mid, this.landscape ? WEST_SHORE_ACROSS_M + 1500 : WEST_SHORE_ACROSS_M - 250);
+    const m = Math.min(W, H);
+    const size = Math.round(0.037 * m);
+    o.font = `700 ${size}px ${this.font}`;
+    o.textBaseline = 'middle';
+    o.textAlign = this.landscape ? 'center' : 'right';
+    const tw = o.measureText(h.label).width;
+    const x = this.landscape ? lx : Math.max(0.06 * m + tw, lx);
+    o.shadowColor = h.day > 0.5 ? 'rgba(239,238,233,0.95)' : 'rgba(0,0,0,0.9)';
+    o.shadowBlur = 10 * s;
+    o.fillStyle = ink(1);
+    o.fillText(h.label, x, ly);
+    o.restore();
   }
 
   /**

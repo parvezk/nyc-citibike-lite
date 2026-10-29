@@ -6,7 +6,7 @@ const inter = Inter({ variable: '--font-inter', subsets: ['latin'], weight: ['40
 
 export const metadata: Metadata = {
   title: 'One day of Citi Bike',
-  description: 'Every Citi Bike ride in Manhattan on one day, in a 10-second loop.',
+  description: 'Every Citi Bike ride in Manhattan on one day: a 27-second story of when and where the city rides.',
 };
 
 export const viewport: Viewport = {

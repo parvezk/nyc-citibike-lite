@@ -1,5 +1,5 @@
 import { decodeCbr1, packJsonTrips, toX } from '@/lib/rides';
-import { liteKeyframes, liteCaptions, hourAt, scopeToManhattan, LITE_SECONDS, clockLabel, lightPlan, dayFracAt, inkDayAt, timeForHour } from '@/lib/timeline';
+import { liteClock, storyText, hourAt, scopeToManhattan, LITE_SECONDS, CUT_T, clockLabel, lightPlan, dayFracAt, inkDayAt, timeForHour, activeAtHour, type Flows } from '@/lib/timeline';
 import { sunTimes } from '@/lib/sun';
 import type { DayStats } from '@/lib/story';
 
@@ -15,26 +15,69 @@ const stats: DayStats = {
   straightLineKm: 271500,
 };
 
+// Minute-by-minute counts: 24 at 3:15, 2,548 at 8:49, 3,276 at 17:42, ~1,000 otherwise.
+const values = Array.from({ length: 1500 }, (_, m) => (m === 195 ? 24 : m === 529 ? 2548 : m === 1062 ? 3276 : 1000));
+stats.activeByMinute = { startEpochMs: start, stepMs: 60000, values };
+
+const flows: Flows = {
+  zone: { name: 'Midtown', detail: '34th St to 59th St', bearingDeg: 29, origin: [-73.97, 40.73], alongFromM: 1155, alongToM: 3203 },
+  windows: [
+    { id: 'am', label: '7–10 AM', from: 7, to: 10, arrivals: 6645, departures: 4610, in: 4318, out: 2255, net: 2035 },
+    { id: 'pm', label: '4–7 PM', from: 16, to: 19, arrivals: 6291, departures: 8474, in: 3246, out: 5438, net: -2183 },
+  ],
+};
+
 describe('lite timeline', () => {
-  it('runs forward from the quiet night to past midnight in 10 s', () => {
-    const keys = liteKeyframes(stats, start);
+  it('opens on the peak, then runs forward from the night to midnight', () => {
+    const clock = liteClock(stats, start);
+    expect(clockLabel(hourAt(clock, 0))).toBe('5:42 PM');
+    expect(clockLabel(hourAt(clock, CUT_T - 0.01))).toBe('5:42 PM');
     let prev = -Infinity;
-    for (let t = 0; t <= LITE_SECONDS; t += 0.05) {
-      const h = hourAt(keys, t);
+    for (let t = CUT_T; t <= LITE_SECONDS; t += 0.05) {
+      const h = hourAt(clock, t);
       expect(h).toBeGreaterThanOrEqual(prev);
       prev = h;
     }
-    expect(hourAt(keys, 2.0)).toBeCloseTo(3.25 + 0.03, 2);
-    expect(hourAt(keys, 6.1)).toBeCloseTo(17.7, 2);
-    expect(hourAt(keys, LITE_SECONDS)).toBe(24.5);
+    expect(hourAt(clock, LITE_SECONDS)).toBe(24);
   });
 
-  it('writes the captions from the day', () => {
-    const lines = liteCaptions(stats).flatMap(c => c.lines);
-    expect(lines).toContain('Only 24 Citi Bikes are moving.');
-    expect(lines).toContain('Rush hour: 3,276 bikes at once.');
-    expect(lines).toContain('124,300');
-    expect(lines).toContain('6 times around the Earth.');
+  it('holds the clock inside each key minute, so the counter matches the caption', () => {
+    const clock = liteClock(stats, start);
+    const text = storyText(stats, flows);
+    const holds: Array<[string, number]> = [['night', 24], ['morning', 2548], ['peak', 3276]];
+    for (const [id, n] of holds) {
+      const cap = text.captions.find(c => c.id === id)!;
+      expect(cap.text).toContain(n.toLocaleString('en-US'));
+      // The counter shows the caption's number for at least a second of it.
+      let frames = 0;
+      for (let t = cap.from; t <= cap.to; t += 1 / 30) {
+        if (activeAtHour(stats, start, hourAt(clock, t)) === n) frames++;
+      }
+      expect(frames).toBeGreaterThanOrEqual(30);
+    }
+  });
+
+  it('writes the words from the day', () => {
+    const text = storyText(stats, flows);
+    const lines = text.captions.map(c => c.text);
+    expect(text.hookTitle).toBe('Every Citi Bike ride in Manhattan, one Wednesday');
+    expect(text.hookSub).toBe('From 24 bikes moving at 3:15 AM to 3,276 at 5:42 PM');
+    expect(lines).toContain('The quietest minute: only 24 bikes moving');
+    expect(lines).toContain('Morning rush: 2,548 bikes at 8:49 AM');
+    expect(lines).toContain('Evening rush: 3,276 bikes at 5:42 PM, the day’s peak, 29% above the morning');
+    expect(lines).toContain('Then Midtown pushes them out: 1.7× as many leave as arrive');
+    expect(text.card.big).toBe('124,300 rides');
+    expect(text.card.small).toContain('136×');
+    expect(text.footer).toContain('Wed, Sep 23, 2026');
+    expect(text.footer).toContain('Parvez Kose');
+    expect(lines.join(' ')).not.toMatch(/Earth/);
+  });
+
+  it('keeps every caption on screen for at least 2.5 s', () => {
+    for (const c of storyText(stats, flows).captions) {
+      if (c.id === 'sunrise' || c.id === 'sunset') continue;
+      expect(c.to - c.from).toBeGreaterThanOrEqual(2.5);
+    }
   });
 
   it('formats the clock', () => {
@@ -82,15 +125,16 @@ describe('lite rides', () => {
 });
 
 describe('light', () => {
-  it('turns day at sunrise and night at sunset', () => {
-    const keys = liteKeyframes(stats, start);
-    const plan = lightPlan(keys, 6.8, 18.9);
-    expect(plan.riseT).not.toBeNull();
-    expect(plan.setT).not.toBeNull();
-    expect(dayFracAt(plan, 1.0)).toBe(0);
-    expect(dayFracAt(plan, (plan.riseT! + plan.setT!) / 2)).toBe(1);
-    expect(dayFracAt(plan, 9.5)).toBe(0);
-    expect(hourAt(keys, timeForHour(keys, 12)!)).toBeCloseTo(12, 3);
+  it('opens in daylight, cuts to night, then follows the sun', () => {
+    const clock = liteClock(stats, start);
+    const plan = lightPlan(clock, 6.8, 18.9);
+    expect(plan.startDay).toBe(true);
+    expect(plan.wipes.map(w => w.toDay)).toEqual([false, true, false]);
+    expect(dayFracAt(plan, 0)).toBe(1);
+    expect(dayFracAt(plan, 4.5)).toBe(0);
+    expect(dayFracAt(plan, 12)).toBe(1);
+    expect(dayFracAt(plan, LITE_SECONDS - 1)).toBe(0);
+    expect(hourAt(clock, timeForHour(clock, 12)!)).toBeCloseTo(12, 3);
   });
 
   it('flips words when the scan line passes them', () => {

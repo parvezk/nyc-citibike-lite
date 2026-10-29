@@ -3,34 +3,47 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { loadDayStats, resolveDay } from '@/lib/dayData';
 import type { DayStats } from '@/lib/story';
-import { formatStoryDate } from '@/lib/story';
+import { hourOfDay } from '@/lib/story';
 import { loadAllRides, loadSampleRides, type RideSet } from '@/lib/rides';
 import { LiteRenderer, type Outline } from '@/lib/renderer';
 import { sunTimes } from '@/lib/sun';
 import {
+  CHART_FROM_H,
+  CHART_TO_H,
+  COPY,
+  CUT_T,
   LITE_FPS,
   LITE_FRAMES,
   LITE_SECONDS,
   activeAtHour,
+  cardOpacity,
+  chartGhost,
+  chartSeries,
   clockLabel,
   counterOpacity,
+  dayFracAt,
   dayStartMs,
   dimAt,
   driftAt,
   fadeWindow,
+  highlightAt,
+  hookOpacity,
   hourAt,
-  liteCaptions,
-  liteKeyframes,
-  lightPlan,
-  dayFracAt,
   inkDayAt,
+  legendOpacity,
+  lightPlan,
+  liteClock,
+  middayLow,
+  risingAt,
   scopeToManhattan,
+  storyText,
+  type Flows,
 } from '@/lib/timeline';
 import LiteStatsCard, { sparkX } from './LiteStatsCard';
 
-// One day of Citi Bike, lite: a 10-second canvas loop plus the day's numbers.
-// No map library, no buildings, no scrubber. The animation runs outside React:
-// the frame loop paints the canvas and moves text through refs.
+// One day of Citi Bike in Manhattan: a 24-second story on a canvas, plus the
+// day's numbers. No map library, no buildings, no scrubber. The animation runs
+// outside React: the frame loop paints the canvas and moves text through refs.
 
 export type RidesMode = 'all' | 'sample';
 
@@ -46,6 +59,7 @@ interface Loaded {
   manhattan: boolean;
   rides: RideSet;
   startMs: number;
+  flows: Flows | null;
 }
 
 interface ClipApi {
@@ -56,8 +70,8 @@ interface ClipApi {
 }
 
 // Words are white with a dark halo at night and near-black at day.
-const INK_NIGHT = { '--ink': '255,255,255', '--halo': '0,0,0,0.8' } as React.CSSProperties;
-function setInk(el: HTMLElement | null, day: number) {
+const INK_NIGHT = { '--ink': '255,255,255', '--halo': '0,0,0,0.8', '--paper': '5,7,10' } as React.CSSProperties;
+function setInk(el: HTMLElement | SVGElement | null, day: number) {
   if (!el) return;
   const v = Math.round(255 + (20 - 255) * day);
   el.style.setProperty('--ink', `${v},${v + Math.round(2 * day)},${v + Math.round(6 * day)}`);
@@ -65,9 +79,65 @@ function setInk(el: HTMLElement | null, day: number) {
   // readable over busy streets either way.
   const p = [239, 238, 233].map(c => Math.round(c * day));
   el.style.setProperty('--halo', `${p[0]},${p[1]},${p[2]},${(0.8 + 0.15 * day).toFixed(3)}`);
+  const bg = [5, 7, 10].map((c, i) => Math.round(c + ([239, 238, 233][i] - c) * day));
+  el.style.setProperty('--paper', bg.join(','));
 }
 
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
+
+type Layout = 'tall' | 'square' | 'wide';
+
+// ---------------------------------------------------------------------------
+// Layout, in pixels for the stage. u = 1% of the short side (10.8 px on every
+// 1080-wide export), so type sizes match across 4:5, 1:1, 16:9 and 9:16.
+// ---------------------------------------------------------------------------
+
+interface Mark { hour: number; v: number; value: string; time: string; place: 'above' | 'dip' }
+
+interface Geom {
+  u: number;
+  pad: number;
+  captionTop: number;
+  chart: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    base: number;     // y of the baseline
+    x: (hour: number) => number;
+    y: (v: number) => number;
+    area: string;
+    line: string;
+  };
+  footerLines: number;
+}
+
+function geom(layout: Layout, w: number, h: number, series: Array<[number, number]>, peak: number): Geom {
+  const u = Math.min(w, h) / 100;
+  const pad = 6 * u;
+  const footerLines = layout === 'wide' ? 1 : 2;
+  const footerH = 3.2 * u + footerLines * 2.4 * u * 1.3;
+  const chartH = Math.max(19 * u, Math.min(28 * u, 0.2 * h));
+  const top = h - footerH - chartH - 1.5 * u;
+  const width = w - 2 * pad;
+  const base = chartH - 4.6 * u;
+  const plotTop = 4.2 * u;
+  // Headroom above the peak for its label.
+  const max = peak / 0.74;
+  const x = (hour: number) => ((hour - CHART_FROM_H) / (CHART_TO_H - CHART_FROM_H)) * width;
+  const y = (v: number) => base - (v / max) * (base - plotTop);
+  const pts = series.map(([hr, v]) => `${x(hr).toFixed(1)} ${y(v).toFixed(1)}`);
+  const line = pts.length ? `M${x(CHART_FROM_H).toFixed(1)} ${y(series[0][1]).toFixed(1)} L${pts.join(' L')}` : '';
+  const area = line ? `${line} L${x(CHART_TO_H).toFixed(1)} ${base} L${x(CHART_FROM_H).toFixed(1)} ${base} Z` : '';
+  return {
+    u,
+    pad,
+    captionTop: 27.5 * u,
+    chart: { left: pad, top, width, height: chartH, base, x, y, area, line },
+    footerLines,
+  };
+}
 
 export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   const ridesMode: RidesMode = ridesParam ?? (record ? 'all' : 'sample');
@@ -84,12 +154,22 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   const clockRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef<HTMLDivElement>(null);
   const countRef = useRef<HTMLSpanElement>(null);
+  const hookRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const captionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const nowRef = useRef<SVGLineElement>(null);
+  const nowRefSide = useRef<SVGLineElement>(null);
   const topInkRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const bottomScrimRef = useRef<HTMLDivElement>(null);
   const captionInkRef = useRef<HTMLDivElement>(null);
   const fineInkRef = useRef<HTMLDivElement>(null);
-  const nowRefSide = useRef<SVGLineElement>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartClipRef = useRef<SVGRectElement>(null);
+  const chartGhostRef = useRef<SVGGElement>(null);
+  const chartDotRef = useRef<SVGCircleElement>(null);
+  const markRefs = useRef<Array<SVGGElement | null>>([]);
 
   const rendererRef = useRef<LiteRenderer | null>(null);
   const clock = useRef({ t: 0, prevT: -1, prevHour: 0, playing: true, frame: -1 });
@@ -106,11 +186,14 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
         rides = await loadAllRides(sources.date).catch(() => null);
       }
       rides ??= await loadSampleRides(sources.tripsUrl, startMs);
-      const outline = await fetch('/data/manhattan-outline.json')
-        .then(r => (r.ok ? r.json() : null))
-        .then(j => (j?.rings ?? null) as Outline | null)
-        .catch(() => null);
-      if (!dead) setData({ stats, manhattan, rides, startMs, outline });
+      const [outline, flows] = await Promise.all([
+        fetch('/data/manhattan-outline.json')
+          .then(r => (r.ok ? r.json() : null))
+          .then(j => (j?.rings ?? null) as Outline | null)
+          .catch(() => null),
+        fetch(`/data/days/${sources.date}/flows.json`).then(r => (r.ok ? (r.json() as Promise<Flows>) : null)).catch(() => null),
+      ]);
+      if (!dead) setData({ stats, manhattan, rides, startMs, outline, flows });
     })().catch(e => !dead && setError(String(e?.message ?? e)));
     return () => { dead = true; };
   }, [day, ridesMode]);
@@ -128,58 +211,117 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     return () => ro.disconnect();
   }, []);
 
+  const layout: Layout = !size ? 'tall' : size.w > size.h * 1.15 ? 'wide' : size.h > size.w * 1.15 ? 'tall' : 'square';
+
   const story = useMemo(() => {
     if (!data) return null;
+    const keys = liteClock(data.stats, data.startMs);
+    const sun = sunTimes(data.stats.date);
+    const light = lightPlan(keys, sun.sunrise, sun.sunset);
+    const hourOf = (ms: number) => hourOfDay(ms, data.startMs);
+    const s = data.stats;
+    const mid = middayLow(s, data.startMs);
+    const marks: Mark[] = [];
+    if (s.nightLow) marks.push({ hour: hourOf(s.nightLow.epochMs), v: s.nightLow.active, value: fmt(s.nightLow.active), time: clockLabel(hourOf(s.nightLow.epochMs)), place: 'above' });
+    if (s.morningPeak) marks.push({ hour: hourOf(s.morningPeak.epochMs), v: s.morningPeak.active, value: fmt(s.morningPeak.active), time: clockLabel(hourOf(s.morningPeak.epochMs)), place: 'above' });
+    if (mid) marks.push({ hour: mid.hour, v: mid.active, value: fmt(mid.active), time: clockLabel(mid.hour), place: 'dip' });
+    marks.push({ hour: hourOf(s.peakEpochMs), v: s.peakActive, value: fmt(s.peakActive), time: clockLabel(hourOf(s.peakEpochMs)), place: 'above' });
     return {
-      keys: liteKeyframes(data.stats, data.startMs),
-      captions: liteCaptions(data.stats),
-      light: (() => {
-        const keys = liteKeyframes(data.stats, data.startMs);
-        const sun = sunTimes(data.stats.date);
-        return lightPlan(keys, sun.sunrise, sun.sunset);
-      })(),
+      keys,
+      light,
+      text: storyText(s, data.flows, sun, light),
+      series: chartSeries(s, data.startMs),
+      marks,
     };
   }, [data]);
 
+  const g = useMemo(() => {
+    if (!story || !size || !data || !story.series.length) return null;
+    return geom(layout, size.w, size.h, story.series, data.stats.peakActive);
+  }, [story, size, data, layout]);
+
   // ---- one frame: advance the trails, then paint canvas and words ---------
-  const step = useCallback((t: number, dt: number, paint: boolean) => {
+  const step = useCallback((t: number, paint: boolean) => {
     const r = rendererRef.current;
     if (!r || !story || !data) return;
     const c = clock.current;
     const hour = hourAt(story.keys, t);
     if (c.prevT < 0 || t < c.prevT) {
+      // From the top: pre-roll fifteen minutes of story so the first frame
+      // already has full trails.
       r.clear();
+      const steps = 360, span = 15 / 60;
+      const dh = span / steps;
+      for (let k = 0; k < steps; k++) {
+        const h0 = hour - span + k * dh;
+        r.fade(dh);
+        r.drawWindow(h0, h0 + dh);
+      }
+      c.prevHour = hour;
+    } else if (hour < c.prevHour) {
+      // The cut back to the night.
       c.prevHour = hour;
     }
-    r.fade(dt);
+    // Clear the hook's trails over the first half second after the cut.
+    r.fade(Math.max(0, hour - c.prevHour), t >= CUT_T && t < CUT_T + 0.5 ? 0.82 : 1);
     r.drawWindow(c.prevHour, hour);
     c.prevHour = hour;
     c.prevT = t;
     if (!paint) return;
 
     const dayFrac = dayFracAt(story.light, t);
-    const rising = story.light.setT === null || t < (story.light.riseT ?? 0) + (story.light.setT - (story.light.riseT ?? 0)) / 2;
-    r.present(dayFrac, rising);
-    setInk(topInkRef.current, inkDayAt(dayFrac, 0.12));
-    setInk(captionInkRef.current, inkDayAt(dayFrac, 0.8));
+    r.present(dayFrac, risingAt(story.light, t));
+    const hl = highlightAt(t);
+    if (data.flows && hl.amount > 0) {
+      r.drawHighlight(data.flows.zone, { amount: hl.amount, label: data.flows.zone.name.toUpperCase(), day: inkDayAt(dayFrac, 0.5) });
+    }
+    const H = size?.h ?? 1;
+    setInk(topInkRef.current, inkDayAt(dayFrac, 0.08));
+    setInk(scrimRef.current, inkDayAt(dayFrac, 0.1));
+    setInk(captionInkRef.current, inkDayAt(dayFrac, g ? (g.captionTop + 4 * g.u) / H : 0.25));
+    setInk(chartRef.current, inkDayAt(dayFrac, g ? (g.chart.top + g.chart.height / 2) / H : 0.85));
+    setInk(bottomScrimRef.current, inkDayAt(dayFrac, 0.88));
     setInk(fineInkRef.current, inkDayAt(dayFrac, 0.97));
     const d = driftAt(t);
     if (driftRef.current) driftRef.current.style.transform = `scale(${d.scale.toFixed(4)}) rotate(${d.rotateDeg.toFixed(3)}deg)`;
     if (dimRef.current) dimRef.current.style.opacity = dimAt(t).toFixed(3);
     if (clockRef.current) clockRef.current.textContent = clockLabel(hour);
     const active = activeAtHour(data.stats, data.startMs, hour);
-    if (countRef.current && active !== null) countRef.current.textContent = active.toLocaleString('en-US');
+    if (countRef.current && active !== null) countRef.current.textContent = fmt(active);
     if (counterRef.current) counterRef.current.style.opacity = (active === null ? 0 : counterOpacity(t)).toFixed(3);
-    for (const cap of story.captions) {
+    if (hookRef.current) hookRef.current.style.opacity = hookOpacity(t).toFixed(3);
+    if (legendRef.current) legendRef.current.style.opacity = legendOpacity(t).toFixed(3);
+    if (cardRef.current) cardRef.current.style.opacity = cardOpacity(t).toFixed(3);
+    for (const cap of story.text.captions) {
       const el = captionRefs.current[cap.id];
-      if (el) el.style.opacity = fadeWindow(t, cap.from, cap.to, cap.id === 'card' ? 0.3 : 0.2).toFixed(3);
+      if (el) el.style.opacity = fadeWindow(t, cap.from, cap.to, 0.25).toFixed(3);
     }
-    const x = sparkX(hour).toFixed(1);
+
+    // The chart: the whole day ghosted, drawn solid up to the story clock.
+    if (g && chartRef.current) {
+      chartRef.current.style.opacity = '1';
+      const h = t < CUT_T ? CHART_FROM_H : Math.min(CHART_TO_H, Math.max(CHART_FROM_H, hour));
+      const x = g.chart.x(h);
+      chartClipRef.current?.setAttribute('width', Math.max(0, x + 2).toFixed(1));
+      chartGhostRef.current?.setAttribute('opacity', chartGhost(t).toFixed(3));
+      const v = activeAtHour(data.stats, data.startMs, h) ?? 0;
+      if (chartDotRef.current) {
+        chartDotRef.current.setAttribute('cx', x.toFixed(1));
+        chartDotRef.current.setAttribute('cy', g.chart.y(v).toFixed(1));
+        chartDotRef.current.style.opacity = t < CUT_T || h >= CHART_TO_H ? '0' : '1';
+      }
+      story.marks.forEach((m, i) => {
+        const el = markRefs.current[i];
+        if (el) el.style.opacity = t >= CUT_T && hour >= m.hour ? '1' : '0';
+      });
+    }
+
+    const sx = sparkX(hour).toFixed(1);
     for (const line of [nowRef.current, nowRefSide.current]) {
-      line?.setAttribute('x1', x);
-      line?.setAttribute('x2', x);
+      line?.setAttribute('x1', sx);
+      line?.setAttribute('x2', sx);
     }
-  }, [story, data]);
+  }, [story, data, g, size]);
 
   // ---- renderer (rebuilt when the stage or the data changes) --------------
   useEffect(() => {
@@ -202,7 +344,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       const c = clock.current;
       if (c.playing) {
         c.t = (c.t + dt) % LITE_SECONDS;
-        step(c.t, dt, true);
+        step(c.t, true);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -217,16 +359,16 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     const api: ClipApi = {
       frames: LITE_FRAMES,
       fps: LITE_FPS,
-      isReady: () => rendererRef.current !== null && story !== null,
+      isReady: () => rendererRef.current !== null && story !== null && g !== null,
       seek: async (frame: number) => {
         const c = clock.current;
         const target = ((frame % LITE_FRAMES) + LITE_FRAMES) % LITE_FRAMES;
         if (target !== c.frame + 1) {
           // Replay from the top so the trails are exactly what playback shows.
           c.prevT = -1;
-          for (let f = 0; f < target; f++) step(f * dt, dt, false);
+          for (let f = 0; f < target; f++) step(f * dt, false);
         }
-        step(target * dt, dt, true);
+        step(target * dt, true);
         c.frame = target;
         await nextFrame();
         await nextFrame();
@@ -234,7 +376,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     };
     (window as unknown as { __clip?: ClipApi }).__clip = api;
     return () => { delete (window as unknown as { __clip?: ClipApi }).__clip; };
-  }, [record, story, step]);
+  }, [record, story, step, g]);
 
   const togglePlay = () => {
     clock.current.playing = !clock.current.playing;
@@ -248,13 +390,23 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   };
 
   const stats = data?.stats;
-  const caption = (id: string) => story?.captions.find(c => c.id === id);
-  const card = caption('card');
-  const fine = stats
-    ? `${stats.date ? formatStoryDate(stats.date) : ''} · Citi Bike trip data${data && !data.manhattan ? ' (all of NYC)' : ''} · routes are estimated${
-        data && data.rides.source === 'sample' ? ` · ${data.rides.count.toLocaleString('en-US')} rides drawn` : ''
-      }`
+  const text = story?.text;
+  const fine = text
+    ? `${text.footer}${data && !data.manhattan ? ' (all of NYC)' : ''}${data && data.rides.source === 'sample' ? ` · ${fmt(data.rides.count)} rides drawn` : ''}`
     : '';
+  const u = g?.u ?? 0;
+  const halo = '0 1px 12px rgba(var(--halo)), 0 0 3px rgba(var(--halo))';
+  const flowRow = (id: 'am' | 'pm') => {
+    const w = data?.flows?.windows.find(x => x.id === id);
+    if (!w || !data?.flows) return null;
+    return (
+      <div className="flex flex-wrap items-baseline" style={{ gap: `0.4em ${2.6 * u}px`, marginTop: 1.4 * u, fontSize: 3.8 * u, fontWeight: 500 }}>
+        <span><b className="font-extrabold tabular-nums">→ {fmt(w.in)}</b> {COPY.zoneIn}</span>
+        <span><b className="font-extrabold tabular-nums">← {fmt(w.out)}</b> {COPY.zoneOut}</span>
+        <span style={{ color: 'rgba(var(--ink),0.72)' }}>{w.label}</span>
+      </div>
+    );
+  };
 
   const stage = (
     <div
@@ -270,52 +422,156 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       <div ref={driftRef} className="absolute inset-0" style={{ transformOrigin: '50% 55%' }}>
         <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full" />
       </div>
+      {/* Soft washes behind the words at the top and the chart at the bottom. */}
+      <div
+        ref={scrimRef}
+        className="pointer-events-none absolute inset-x-0 top-0"
+        style={{ ...INK_NIGHT, height: g ? g.captionTop + 16 * u : '40%', background: 'linear-gradient(to bottom, rgba(var(--paper),0.85) 0%, rgba(var(--paper),0.7) 60%, rgba(var(--paper),0) 100%)' }}
+      />
+      <div
+        ref={bottomScrimRef}
+        className="pointer-events-none absolute inset-x-0 bottom-0"
+        style={{ ...INK_NIGHT, height: g ? (size?.h ?? 0) - g.chart.top + 7 * u : '30%', background: 'linear-gradient(to top, rgba(var(--paper),0.9) 0%, rgba(var(--paper),0.78) 70%, rgba(var(--paper),0) 100%)' }}
+      />
       <div ref={dimRef} className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: 0 }} />
 
-      <div className="pointer-events-none absolute inset-0">
-        <div ref={topInkRef} className="absolute flex flex-col" style={{ ...INK_NIGHT, top: '6cqmin', left: '6cqmin', gap: '1.4cqmin', color: 'rgb(var(--ink))', textShadow: '0 1px 10px rgba(var(--halo))' }}>
-          <div className="font-semibold uppercase" style={{ fontSize: '2.55cqmin', letterSpacing: '0.18em', color: 'rgba(var(--ink),0.68)' }}>
-            One day of Citi Bike{data?.manhattan ? ' · Manhattan' : ''}
+      {g && text && story && (
+        <div className="pointer-events-none absolute inset-0">
+          {/* Top band: kicker, then the live count and the clock. */}
+          <div ref={topInkRef} className="absolute" style={{ ...INK_NIGHT, top: g.pad * 0.8, left: g.pad, right: g.pad, color: 'rgb(var(--ink))', textShadow: halo }}>
+            <div className="font-semibold uppercase" style={{ fontSize: 3 * u, letterSpacing: '0.16em', color: 'rgba(var(--ink),0.8)' }}>
+              {text.kicker}
+            </div>
+            <div ref={counterRef} className="flex items-start justify-between" style={{ marginTop: 2 * u, opacity: 0 }}>
+              <div>
+                <div className="font-extrabold tabular-nums" style={{ fontSize: 9 * u, lineHeight: 1, letterSpacing: '-0.02em' }}>
+                  <span ref={countRef} />
+                </div>
+                <div className="font-medium" style={{ fontSize: 3.2 * u, marginTop: 0.8 * u, color: 'rgba(var(--ink),0.85)' }}>{text.counterLabel}</div>
+              </div>
+              <div className="text-right">
+                <div ref={clockRef} className="font-extrabold tabular-nums" style={{ fontSize: 9 * u, lineHeight: 1, letterSpacing: '-0.01em' }} />
+                <div className="relative" style={{ height: 3.2 * u * 1.3, marginTop: 0.8 * u }}>
+                  {text.captions.filter(c => c.id === 'sunrise' || c.id === 'sunset').map(c => (
+                    <div key={c.id} ref={el => { captionRefs.current[c.id] = el; }} className="absolute right-0 top-0 whitespace-nowrap font-semibold" style={{ fontSize: 3.2 * u, opacity: 0 }}>
+                      {c.text}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
-          <div ref={clockRef} className="font-extrabold tabular-nums leading-none" style={{ fontSize: '10.6cqmin', letterSpacing: '-0.01em' }}>
-            {null}
-          </div>
-          <div ref={counterRef} className="font-medium" style={{ fontSize: '3.7cqmin', color: 'rgba(var(--ink),0.88)', opacity: 0 }}>
-            <span ref={countRef} className="font-bold tabular-nums" style={{ color: 'rgb(var(--ink))' }} /> bikes moving
-          </div>
-        </div>
 
-        <div ref={captionInkRef} className="absolute inset-0" style={{ ...INK_NIGHT, color: 'rgb(var(--ink))' }}>
-        {story?.captions.filter(c => c.id !== 'card').map(c => (
+          {/* Captions, under the top band. */}
+          <div ref={captionInkRef} className="absolute inset-0" style={{ ...INK_NIGHT, color: 'rgb(var(--ink))' }}>
+            <div ref={hookRef} className="absolute" style={{ top: g.pad * 0.8 + 6 * u, left: g.pad, right: g.pad, textShadow: halo }}>
+              <div className="font-extrabold" style={{ fontSize: (layout === 'wide' ? 6.6 : 7) * u, lineHeight: 1.05, letterSpacing: '-0.015em', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookTitle}</div>
+              <div className="font-semibold" style={{ fontSize: 4.2 * u, marginTop: 2 * u, lineHeight: 1.2, color: 'rgba(var(--ink),0.88)', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookSub}</div>
+            </div>
+
+            {text.captions.filter(c => c.id !== 'sunrise' && c.id !== 'sunset').map(c => (
+              <div
+                key={c.id}
+                ref={el => { captionRefs.current[c.id] = el; }}
+                className="absolute font-semibold"
+                style={{ top: g.captionTop, left: g.pad, right: g.pad, maxWidth: layout === 'wide' ? '58%' : undefined, fontSize: 4.6 * u, lineHeight: 1.18, opacity: 0, textShadow: halo }}
+              >
+                {c.text}
+                {c.id === 'midtownIn' && flowRow('am')}
+                {c.id === 'midtownOut' && flowRow('pm')}
+                {c.id === 'night' && (
+                  <div ref={legendRef} className="flex flex-wrap items-center font-medium" style={{ gap: `${1.2 * u}px ${3 * u}px`, marginTop: 2 * u, fontSize: 3.8 * u, opacity: 0 }}>
+                    <span className="inline-flex items-center" style={{ gap: 1.2 * u }}>
+                      <svg width={9 * u} height={2 * u} viewBox="0 0 90 20" aria-hidden="true">
+                        <defs>
+                          <linearGradient id="streak" gradientUnits="userSpaceOnUse" x1="2" x2="80" y1="10" y2="10">
+                            <stop offset="0" stopColor="rgb(255,150,48)" stopOpacity="0" />
+                            <stop offset="1" stopColor="rgb(255,150,48)" stopOpacity="1" />
+                          </linearGradient>
+                        </defs>
+                        <path d="M2 10 L80 10" stroke="url(#streak)" strokeWidth="5" strokeLinecap="round" />
+                        <circle cx="81" cy="10" r="6" fill="rgb(255,238,205)" />
+                      </svg>
+                      = {text.legendRide}
+                    </span>
+                    <span className="inline-flex items-center" style={{ gap: 1.2 * u }}>
+                      <svg width={6 * u} height={2 * u} viewBox="0 0 60 20" aria-hidden="true">
+                        <path d="M2 10 L58 10" stroke="rgba(64,196,255,0.7)" strokeWidth="3" />
+                      </svg>
+                      = {text.legendStreet}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* End card. */}
           <div
-            key={c.id}
-            ref={el => { captionRefs.current[c.id] = el; }}
-            className="absolute left-0 right-0 text-center font-semibold"
-            style={{ bottom: '16.7cqh', padding: '0 6.5cqmin', fontSize: '5.3cqmin', lineHeight: 1.2, opacity: 0, textShadow: '0 1px 12px rgba(var(--halo))' }}
+            ref={cardRef}
+            className="absolute flex flex-col items-center justify-center text-center text-white"
+            style={{ top: g.pad, bottom: (size?.h ?? 0) - g.chart.top, left: g.pad, right: g.pad, opacity: 0, textShadow: '0 1px 14px rgba(0,0,0,0.9)' }}
           >
-            {c.lines[0]}
+            <div className="font-extrabold tabular-nums" style={{ fontSize: 12 * u, lineHeight: 1, letterSpacing: '-0.02em' }}>{text.card.big}</div>
+            <div className="font-semibold" style={{ fontSize: 4.6 * u, marginTop: 2.4 * u, lineHeight: 1.25, whiteSpace: 'pre-line' }}>{text.card.line}</div>
+            <div className="font-medium" style={{ fontSize: 3.8 * u, marginTop: 1.6 * u, color: 'rgba(255,255,255,0.85)' }}>{text.card.small}</div>
+            <div className="font-semibold" style={{ fontSize: 3.6 * u, marginTop: 4 * u, color: 'rgba(255,255,255,0.92)' }}>Visualization by Parvez Kose</div>
           </div>
-        ))}
-        </div>
 
-        {card && (
-          <div
-            ref={el => { captionRefs.current.card = el; }}
-            className="absolute inset-0 flex flex-col items-center justify-center text-center"
-            style={{ padding: '0 6.5cqmin', opacity: 0, textShadow: '0 1px 14px rgba(0,0,0,0.85)' }}
-          >
-            <div className="font-extrabold tabular-nums" style={{ fontSize: '14.4cqmin', lineHeight: 1, letterSpacing: '-0.02em' }}>{card.lines[0]}</div>
-            <div className="font-semibold" style={{ fontSize: '5.3cqmin', marginTop: '1.9cqmin' }}>{card.lines[1]}</div>
-            {card.lines[2] && (
-              <div className="font-semibold" style={{ fontSize: '5.3cqmin', marginTop: '5cqmin', color: '#FFA648' }}>{card.lines[2]}</div>
-            )}
+          {/* The chart of bikes moving. */}
+          <div ref={chartRef} className="absolute" style={{ ...INK_NIGHT, left: g.chart.left, top: g.chart.top, width: g.chart.width, height: g.chart.height, color: 'rgb(var(--ink))', opacity: 0 }}>
+            <svg width={g.chart.width} height={g.chart.height} style={{ overflow: 'visible' }} role="img" aria-label={`${text.chartTitle}, from 3 AM to midnight`}>
+              <defs>
+                <clipPath id="chart-reveal">
+                  <rect ref={chartClipRef} x={-10} y={-g.chart.height} width={0} height={g.chart.height * 3} />
+                </clipPath>
+              </defs>
+              <text x={0} y={2.6 * u} fontSize={2.8 * u} fontWeight={600} fill="rgba(var(--ink),0.8)" style={{ letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                {text.chartTitle}
+              </text>
+              <line x1={0} x2={g.chart.width} y1={g.chart.y(3000)} y2={g.chart.y(3000)} stroke="rgba(var(--ink),0.25)" strokeWidth={1.5} strokeDasharray={`${0.6 * u} ${0.8 * u}`} />
+              <text x={g.chart.width} y={g.chart.y(3000) - 0.8 * u} fontSize={2.6 * u} fill="rgba(var(--ink),0.6)" textAnchor="end">3,000</text>
+              <line x1={0} x2={g.chart.width} y1={g.chart.base} y2={g.chart.base} stroke="rgba(var(--ink),0.4)" strokeWidth={1.5} />
+              {[6, 12, 18].map(hr => (
+                <g key={hr}>
+                  <line x1={g.chart.x(hr)} x2={g.chart.x(hr)} y1={g.chart.base} y2={g.chart.base + 0.9 * u} stroke="rgba(var(--ink),0.5)" strokeWidth={1.5} />
+                  <text x={g.chart.x(hr)} y={g.chart.base + 3.6 * u} fontSize={3.2 * u} fill="rgba(var(--ink),0.72)" textAnchor="middle">
+                    {hr === 12 ? 'Noon' : clockLabel(hr).replace(':00', '')}
+                  </text>
+                </g>
+              ))}
+              <g ref={chartGhostRef} opacity={0.35}>
+                <path d={g.chart.line} fill="none" stroke="rgb(var(--ink))" strokeWidth={Math.max(2, 0.3 * u)} strokeLinejoin="round" />
+              </g>
+              <g clipPath="url(#chart-reveal)">
+                <path d={g.chart.area} fill="rgba(255,122,42,0.3)" />
+                <path d={g.chart.line} fill="none" stroke="#FF7A2A" strokeWidth={Math.max(3, 0.5 * u)} strokeLinejoin="round" />
+              </g>
+              {story.marks.map((m, i) => {
+                const x = g.chart.x(m.hour);
+                const y = g.chart.y(m.v);
+                const anchor = x < g.chart.width * 0.08 ? 'start' : x > g.chart.width * 0.92 ? 'end' : 'middle';
+                const dip = m.place === 'dip';
+                const ty = dip ? g.chart.base - 1.2 * u : y - 1.6 * u;
+                return (
+                  <g key={m.hour} ref={el => { markRefs.current[i] = el; }} style={{ opacity: 0 }}>
+                    <circle cx={x} cy={y} r={0.75 * u} fill="rgb(var(--ink))" stroke="rgb(var(--paper))" strokeWidth={0.3 * u} />
+                    <text x={anchor === 'start' ? x - 0.5 * u : x} y={ty} textAnchor={anchor} fill="rgb(var(--ink))" style={{ paintOrder: 'stroke', stroke: 'rgba(var(--paper),0.9)', strokeWidth: 0.7 * u, strokeLinejoin: 'round' }}>
+                      <tspan fontSize={(dip ? 3.4 : 4.2) * u} fontWeight={800}>{m.value}</tspan>
+                      <tspan fontSize={(dip ? 2.8 : 3.2) * u} fontWeight={600} dx={0.8 * u}>{m.time}</tspan>
+                    </text>
+                  </g>
+                );
+              })}
+              <circle ref={chartDotRef} r={1 * u} fill="#FF7A2A" stroke="rgb(var(--ink))" strokeWidth={0.3 * u} cx={0} cy={g.chart.base} />
+            </svg>
           </div>
-        )}
 
-        <div ref={fineInkRef} className="absolute left-0 right-0 text-center" style={{ ...INK_NIGHT, bottom: '3.7cqmin', fontSize: '2.3cqmin', color: 'rgba(var(--ink),0.62)', padding: '0 4cqmin' }}>
-          {fine}
+          <div ref={fineInkRef} className="absolute text-center font-medium" style={{ ...INK_NIGHT, left: g.pad * 0.6, right: g.pad * 0.6, bottom: 2.4 * u, fontSize: 2.4 * u, lineHeight: 1.3, color: 'rgba(var(--ink),0.78)' }}>
+            {fine}
+          </div>
         </div>
-      </div>
+      )}
 
       {!data && (
         <div className="absolute inset-0 flex items-center justify-center p-8 text-center text-sm text-white/80">
@@ -331,14 +587,14 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
 
   return (
     <main className="flex min-h-[100svh] w-full items-center justify-center gap-8 bg-[#050608] text-white lg:p-6">
-      {/* Phones: the loop fills the screen. Wider screens: a 9:16 column. */}
-      <div className="relative flex h-[100svh] w-full flex-col lg:h-[min(92svh,1100px)] lg:w-auto lg:aspect-[9/16.6]">
+      {/* Phones: the story fills the screen. Wider screens: a 4:5 column. */}
+      <div className="relative flex h-[100svh] w-full flex-col lg:h-[min(92svh,1100px)] lg:w-auto lg:aspect-[4/5.3]">
         <div className="relative min-h-0 flex-1 lg:overflow-hidden lg:rounded-xl">{stage}</div>
         <div className="flex h-14 shrink-0 items-center gap-2.5 px-3.5">
           <button type="button" className={button} onClick={togglePlay} aria-label={paused ? 'Play' : 'Pause'}>
             {paused ? 'Play' : 'Pause'}
           </button>
-          <button type="button" className={button} onClick={restart} aria-label="Restart the loop">Restart</button>
+          <button type="button" className={button} onClick={restart} aria-label="Restart the story">Restart</button>
           {stats && (
             <button
               type="button"
@@ -350,7 +606,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
               {statsOpen ? 'Close' : 'The day in numbers'}
             </button>
           )}
-          <div className="ml-auto hidden text-xs text-white/60 lg:block">10 s loop</div>
+          <div className="ml-auto hidden text-xs text-white/60 lg:block">{LITE_SECONDS} s story</div>
         </div>
         {stats && data && statsOpen && (
           <div id="lite-stats-sheet" className="absolute inset-x-3 bottom-16 flex justify-center lg:hidden">
