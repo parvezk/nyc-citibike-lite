@@ -41,25 +41,30 @@ const fmtInt = (n: number) => Math.round(n).toLocaleString('en-US');
 export const COPY = {
   kicker: 'One day of Citi Bike · Manhattan',
   counterLabel: 'bikes moving right now',
-  hookTitle: 'Every Citi Bike ride in Manhattan, one {weekday}',
-  hookSub: 'From {low} bikes moving at {lowTime} to {peak} at {peakTime}',
+  hookTitle: 'Two rush hours.\nThe evening one is bigger.',
+  hookSub: 'Every Citi Bike ride in Manhattan on {dateLong}: from {low} bikes moving at {lowTime} to {peak} at {peakTime}',
   night: 'The quietest minute: only {low} bikes moving',
   legendRide: 'one bike riding right now',
   legendStreet: 'streets',
-  morning: 'Morning rush: {am} bikes at {amTime}',
+  // Captions with a number come in two parts: the second part appears when
+  // the counter reaches the number (the hold).
+  morning: 'Morning rush',
+  morningRest: ': {am} bikes at {amTime}',
   midtownIn: 'Midtown pulls riders in: nearly twice as many arrive as leave',
-  peak: 'Evening rush: {peak} bikes at {peakTime}, the day’s peak, {pct}% above the morning',
+  peak: 'Evening rush',
+  peakRest: ': {peak} bikes at {peakTime}, the day’s peak, {pct}% above the morning',
+  tallyAm: '{in} rides in · {out} out · {label}',
+  tallyPm: '{out} rides out · {in} in · {label}',
   midtownOut: 'Then Midtown pushes them out: {ratio}× as many leave as arrive',
   sunrise: 'Sunrise {time}',
   sunset: 'Sunset {time}',
   cardBig: '{rides} rides',
   cardLine: 'Low: {low} bikes at {lowTime}\nPeak: {peak} at {peakTime}',
-  cardSmall: '{x}× from the night low to rush hour',
+  cardSmall: 'Evening rush {pct}% above the morning',
   footer: 'Data: Citi Bike System Data · {date} · rides starting or ending in Manhattan · routes estimated · Parvez Kose',
   chartTitle: 'Bikes moving, minute by minute',
-  posterTitle: 'Manhattan’s bikes breathe twice a day',
-  zoneIn: 'in',
-  zoneOut: 'out',
+  chartTitleShort: 'Bikes moving',
+  posterTitle: 'Two rush hours. The evening one is {pct}% bigger.',
 };
 
 export function fill(template: string, vars: Record<string, string | number>): string {
@@ -127,6 +132,11 @@ export interface LiteCaption {
   from: number;
   to: number;
   text: string;
+  // Appended at restFrom, when the counter reaches the caption's number.
+  rest?: string;
+  restFrom?: number;
+  // The Midtown counts under a caption.
+  tally?: string;
 }
 
 export interface StoryText {
@@ -140,6 +150,8 @@ export interface StoryText {
   card: { big: string; line: string; small: string };
   footer: string;
   chartTitle: string;
+  chartTitleShort: string;
+  posterTitle: string;
 }
 
 export function storyText(
@@ -152,11 +164,15 @@ export function storyText(
   const at = (ms: number) => clockLabel(hourOfDay(ms, start));
   const weekday = new Date(`${stats.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
   const date = new Date(`${stats.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  const noon = new Date(`${stats.date}T12:00:00`);
+  const month = noon.getMonth() === 8 ? 'Sept' : noon.toLocaleDateString('en-US', { month: 'short' });
+  const dateLong = `${noon.toLocaleDateString('en-US', { weekday: 'short' })}, ${month} ${noon.getDate()}, ${noon.getFullYear()}`;
   const low = stats.nightLow;
   const am = stats.morningPeak;
   const vars: Record<string, string | number> = {
     weekday,
     date,
+    dateLong,
     peak: fmtInt(stats.peakActive),
     peakTime: at(stats.peakEpochMs),
     rides: fmtInt(stats.totalTrips),
@@ -170,17 +186,23 @@ export function storyText(
   const pm = flows?.windows.find(w => w.id === 'pm');
   if (pm) vars.ratio = (pm.out / pm.in).toFixed(1);
 
+  const amFlow = flows?.windows.find(w => w.id === 'am');
+  const tally = (tpl: string, w: { in: number; out: number; label: string }) => fill(tpl, { in: fmtInt(w.in), out: fmtInt(w.out), label: w.label });
   const captions: LiteCaption[] = [];
-  if (low) captions.push({ id: 'night', from: 3.0, to: 6.0, text: fill(COPY.night, vars) });
-  if (am) captions.push({ id: 'morning', from: 8.7, to: 11.2, text: fill(COPY.morning, vars) });
-  if (flows) captions.push({ id: 'midtownIn', from: 11.3, to: 13.9, text: fill(COPY.midtownIn, vars) });
-  captions.push({ id: 'peak', from: 15.5, to: 19.0, text: fill(am ? COPY.peak : 'Rush hour: {peak} bikes at {peakTime}', vars) });
-  if (flows && pm) captions.push({ id: 'midtownOut', from: 19.1, to: 21.7, text: fill(COPY.midtownOut, vars) });
+  // The night caption starts with the 3:15 hold, when the counter reads 24.
+  if (low) captions.push({ id: 'night', from: 4.2, to: 6.7, text: fill(COPY.night, vars) });
+  if (am) captions.push({ id: 'morning', from: 8.7, to: 11.25, text: fill(COPY.morning, vars), rest: fill(COPY.morningRest, vars), restFrom: 9.7 });
+  if (flows && amFlow) captions.push({ id: 'midtownIn', from: 11.3, to: 13.9, text: fill(COPY.midtownIn, vars), tally: tally(COPY.tallyAm, amFlow) });
+  if (am) captions.push({ id: 'peak', from: 15.5, to: 19.7, text: fill(COPY.peak, vars), rest: fill(COPY.peakRest, vars), restFrom: 17.2 });
+  else captions.push({ id: 'peak', from: 15.5, to: 19.7, text: fill('Rush hour: {peak} bikes at {peakTime}', vars) });
+  if (flows && pm) captions.push({ id: 'midtownOut', from: 19.75, to: 22.4, text: fill(COPY.midtownOut, vars), tally: tally(COPY.tallyPm, pm) });
   if (sun && plan) {
+    // The wipes start when the clock reaches sunrise / sunset; the tags ride along.
     const rise = plan.wipes.find(w => w.toDay);
     const set = plan.wipes.filter(w => !w.toDay).pop();
-    if (rise) captions.push({ id: 'sunrise', from: rise.t - 0.45, to: rise.t + 0.5, text: fill(COPY.sunrise, { time: clockLabel(sun.sunrise) }) });
-    if (set && set.t > CUT_T + 1) captions.push({ id: 'sunset', from: set.t - 0.45, to: set.t + 0.5, text: fill(COPY.sunset, { time: clockLabel(sun.sunset) }) });
+    const half = WIPE_SECONDS / 2;
+    if (rise) captions.push({ id: 'sunrise', from: rise.t - half, to: rise.t + half + 0.6, text: fill(COPY.sunrise, { time: clockLabel(sun.sunrise) }) });
+    if (set && set.t > CUT_T + 1) captions.push({ id: 'sunset', from: set.t - half, to: set.t + half + 0.6, text: fill(COPY.sunset, { time: clockLabel(sun.sunset) }) });
   }
 
   return {
@@ -194,6 +216,8 @@ export function storyText(
     card: { big: fill(COPY.cardBig, vars), line: low ? fill(COPY.cardLine, vars) : '', small: low ? fill(COPY.cardSmall, vars) : '' },
     footer: fill(COPY.footer, vars),
     chartTitle: COPY.chartTitle,
+    chartTitleShort: COPY.chartTitleShort,
+    posterTitle: fill(COPY.posterTitle, vars),
   };
 }
 
@@ -213,7 +237,7 @@ export function counterOpacity(t: number): number {
   return fadeWindow(t, CUT_T + 0.2, CARD_FROM + 0.1, 0.3);
 }
 export function legendOpacity(t: number): number {
-  return fadeWindow(t, 3.3, 7.0, 0.3);
+  return fadeWindow(t, 4.2, 6.7, 0.3);
 }
 export function cardOpacity(t: number): number {
   return fadeWindow(t, CARD_FROM, LITE_SECONDS + 1, 0.4);
@@ -227,7 +251,16 @@ export function chartGhost(t: number): number {
 // Midtown lights up while its captions are on screen.
 export function highlightAt(t: number): { amount: number; window: 'am' | 'pm' } {
   if (t < 16) return { amount: fadeWindow(t, 11.3, 13.9, 0.35), window: 'am' };
-  return { amount: fadeWindow(t, 19.1, 21.7, 0.35), window: 'pm' };
+  return { amount: fadeWindow(t, 19.75, 22.4, 0.35), window: 'pm' };
+}
+
+// Night heads grow and glow while the clock is near 3 AM (story hours).
+export function headBoostAt(t: number, hour: number): number {
+  if (t < CUT_T) return 1;
+  const ease = (x: number) => { const c = Math.max(0, Math.min(1, x)); return c * c * (3 - 2 * c); };
+  if (hour < 2.9) return 1;
+  if (hour <= 3 + 35 / 60) return 2.5;
+  return 1 + 1.5 * (1 - ease((hour - (3 + 35 / 60)) / (25 / 60)));
 }
 
 // Darken the map under the end card so the words read.
@@ -297,8 +330,10 @@ export function lightPlan(clock: StoryClock, sunrise: number, sunset: number): L
   if (openDay) wipes.push({ t: CUT_T + WIPE_SECONDS / 2, toDay: false });
   const rise = timeForHour(clock, sunrise);
   const set = timeForHour(clock, sunset);
-  if (rise !== null) wipes.push({ t: rise, toDay: true });
-  if (set !== null) wipes.push({ t: set, toDay: false });
+  // Centre each wipe half a wipe after the moment, so the line starts moving
+  // when the clock reads sunrise or sunset.
+  if (rise !== null) wipes.push({ t: rise + WIPE_SECONDS / 2, toDay: true });
+  if (set !== null) wipes.push({ t: set + WIPE_SECONDS / 2, toDay: false });
   return { startDay: openDay, wipes };
 }
 

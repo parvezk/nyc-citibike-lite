@@ -6,7 +6,7 @@ import { hourOfDay, type DayStats } from '@/lib/story';
 import { loadAllRides, type RideSet } from '@/lib/rides';
 import { LiteRenderer, type Outline } from '@/lib/renderer';
 import { sunTimes } from '@/lib/sun';
-import { CHART_FROM_H, CHART_TO_H, COPY, activeAtHour, chartSeries, clockLabel, dayStartMs, middayLow, scopeToManhattan, storyText } from '@/lib/timeline';
+import { CHART_FROM_H, CHART_TO_H, activeAtHour, chartSeries, clockLabel, dayStartMs, middayLow, scopeToManhattan, storyText } from '@/lib/timeline';
 
 // The poster: five moments of the day as small multiples, the day's rhythm
 // as an annotated chart, and the source. Rendered at 2160x2700 (4:5) by
@@ -82,7 +82,10 @@ export default function Poster() {
     <div style={{ width: W, height: H, background: '#f4f3ef', color: '#16181c', position: 'relative', overflow: 'hidden', fontFamily: 'var(--font-sans)' }}>
       <div style={{ position: 'absolute', left: 140, top: 120, right: 140 }}>
         <div style={{ fontSize: 40, fontWeight: 600, letterSpacing: '0.16em', textTransform: 'uppercase', color: '#555b66' }}>One day of Citi Bike · Manhattan</div>
-        <div style={{ fontSize: 112, fontWeight: 800, lineHeight: 1.02, letterSpacing: '-0.02em', marginTop: 28 }}>{COPY.posterTitle}</div>
+        <div style={{ fontSize: 108, fontWeight: 800, lineHeight: 1.04, letterSpacing: '-0.025em', marginTop: 28 }}>
+          {/* One sentence per line, so no word is orphaned in the link-preview crop. */}
+          {(view?.text.posterTitle ?? '').split(/(?<=\.) /).map(line => <div key={line}>{line}</div>)}
+        </div>
         {view && (
           <div style={{ fontSize: 50, fontWeight: 500, marginTop: 30, color: '#333842', lineHeight: 1.25 }}>
             Every Citi Bike ride that started or ended in Manhattan on {view.text.footer.split(' · ')[1]}: {fmt(data!.stats.totalTrips)} rides. Bikes moving at once, from {fmt(data!.stats.nightLow?.active ?? 0)} at night to {fmt(data!.stats.peakActive)} at the evening peak.

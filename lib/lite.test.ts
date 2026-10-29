@@ -47,27 +47,33 @@ describe('lite timeline', () => {
     const holds: Array<[string, number]> = [['night', 24], ['morning', 2548], ['peak', 3276]];
     for (const [id, n] of holds) {
       const cap = text.captions.find(c => c.id === id)!;
-      expect(cap.text).toContain(n.toLocaleString('en-US'));
-      // The counter shows the caption's number for at least a second of it.
+      expect(cap.text + (cap.rest ?? '')).toContain(n.toLocaleString('en-US'));
+      // From the moment the number is on screen, the counter shows it for at
+      // least a second, and never a different number before the hold ends.
+      const shown = cap.restFrom ?? cap.from;
       let frames = 0;
-      for (let t = cap.from; t <= cap.to; t += 1 / 30) {
+      for (let t = shown; t <= cap.to; t += 1 / 30) {
         if (activeAtHour(stats, start, hourAt(clock, t)) === n) frames++;
       }
       expect(frames).toBeGreaterThanOrEqual(30);
+      expect(activeAtHour(stats, start, hourAt(clock, shown + 0.05))).toBe(n);
     }
   });
 
   it('writes the words from the day', () => {
     const text = storyText(stats, flows);
-    const lines = text.captions.map(c => c.text);
-    expect(text.hookTitle).toBe('Every Citi Bike ride in Manhattan, one Wednesday');
-    expect(text.hookSub).toBe('From 24 bikes moving at 3:15 AM to 3,276 at 5:42 PM');
+    const lines = text.captions.map(c => c.text + (c.rest ?? ''));
+    expect(text.hookTitle).toBe('Two rush hours.\nThe evening one is bigger.');
+    expect(text.hookSub).toBe('Every Citi Bike ride in Manhattan on Wed, Sept 23, 2026: from 24 bikes moving at 3:15 AM to 3,276 at 5:42 PM');
+    expect(text.posterTitle).toBe('Two rush hours. The evening one is 29% bigger.');
+    expect(text.captions.find(c => c.id === 'midtownIn')!.tally).toBe('4,318 rides in · 2,255 out · 7–10 AM');
+    expect(text.captions.find(c => c.id === 'midtownOut')!.tally).toBe('5,438 rides out · 3,246 in · 4–7 PM');
     expect(lines).toContain('The quietest minute: only 24 bikes moving');
     expect(lines).toContain('Morning rush: 2,548 bikes at 8:49 AM');
     expect(lines).toContain('Evening rush: 3,276 bikes at 5:42 PM, the day’s peak, 29% above the morning');
     expect(lines).toContain('Then Midtown pushes them out: 1.7× as many leave as arrive');
     expect(text.card.big).toBe('124,300 rides');
-    expect(text.card.small).toContain('136×');
+    expect(text.card.small).toBe('Evening rush 29% above the morning');
     expect(text.footer).toContain('Wed, Sep 23, 2026');
     expect(text.footer).toContain('Parvez Kose');
     expect(lines.join(' ')).not.toMatch(/Earth/);

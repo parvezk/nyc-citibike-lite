@@ -99,6 +99,7 @@ export class LiteRenderer {
   private outline: Outline | null;
   private landscape: boolean;
   private font: string;
+  private headBoost = 1;
 
   constructor(canvas: HTMLCanvasElement, rides: RideSet, size: StageSize, outline: Outline | null) {
     this.size = size;
@@ -115,7 +116,9 @@ export class LiteRenderer {
     // island a little lower for the same reason.
     const square = Math.abs(W - H) < 0.15 * Math.max(W, H);
     const k = (Math.max(W, H) / SPAN_M) * (landscape ? 0.8 : 1);
-    const anchorY = square ? 0.6 : landscape ? 0.5 : ANCHOR_Y;
+    // Square: Midtown (34th-59th St) sits between the caption block and the
+    // chart, so both of its edges show when it is outlined.
+    const anchorY = square ? 0.67 : landscape ? 0.5 : ANCHOR_Y;
     const x0 = toX(CENTER_LNG), y0 = toY(CENTER_LAT);
     const cx = x0 * cb - y0 * sb, cy = x0 * sb + y0 * cb;
     const fromMetres = (x: number, y: number): [number, number] => [
@@ -329,9 +332,21 @@ export class LiteRenderer {
     g.globalCompositeOperation = 'source-over';
   }
 
-  private drawHeads(color: RGB, alpha: number, radius: number) {
+  /**
+   * Night heads bigger and glowing (1 = normal). The story uses it at 3 AM,
+   * when two dozen bikes would otherwise be specks.
+   */
+  setHeadBoost(k: number) {
+    this.headBoost = Math.max(1, k);
+  }
+
+  private drawHeads(color: RGB, alpha: number, radius: number, glow = 0) {
     const o = this.out;
     o.fillStyle = rgba(color, alpha);
+    if (glow > 0) {
+      o.shadowColor = rgba(color, 1);
+      o.shadowBlur = glow;
+    }
     const h = this.heads;
     o.beginPath();
     for (let i = 0; i < h.length; i += 2) {
@@ -339,6 +354,7 @@ export class LiteRenderer {
       o.arc(h[i], h[i + 1], radius, 0, Math.PI * 2);
     }
     o.fill();
+    o.shadowBlur = 0;
   }
 
   private paintNight() {
@@ -348,8 +364,9 @@ export class LiteRenderer {
     o.globalCompositeOperation = 'lighter';
     o.drawImage(this.trailCanvas, 0, 0);
     o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
-    this.drawHeads(NIGHT.head, this.density < 1 ? 0.85 : 0.95, this.headRadius);
     o.globalCompositeOperation = 'source-over';
+    const b = this.headBoost;
+    this.drawHeads(NIGHT.head, this.density < 1 ? 0.85 + 0.15 * Math.min(1, b - 1) : 0.95, this.headRadius * b, b > 1.01 ? 12 * (b - 1) / 1.5 * (this.scale / 1.4) : 0);
   }
 
   private paintDay() {
@@ -410,13 +427,14 @@ export class LiteRenderer {
     return this.fromMetres(along * Math.sin(b) + across * Math.cos(b), along * Math.cos(b) - across * Math.sin(b));
   }
 
-  private bandPath(g: CanvasRenderingContext2D, z: Zone) {
+  // `fresh` false adds the band to the current path (for an even-odd cut-out).
+  private bandPath(g: CanvasRenderingContext2D, z: Zone, fresh = true) {
     const far = 30000;
     const pts = [
       this.zonePoint(z, z.alongFromM, -far), this.zonePoint(z, z.alongFromM, far),
       this.zonePoint(z, z.alongToM, far), this.zonePoint(z, z.alongToM, -far),
     ];
-    g.beginPath();
+    if (fresh) g.beginPath();
     pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
     g.closePath();
   }
@@ -441,7 +459,7 @@ export class LiteRenderer {
     o.clip();
     o.beginPath();
     o.rect(-W, -H, 3 * W, 3 * H);
-    this.bandPath(o, z);
+    this.bandPath(o, z, false);
     o.fillStyle = h.day > 0.5 ? `rgba(239,238,233,${(0.55 * a).toFixed(4)})` : `rgba(0,0,0,${(0.5 * a).toFixed(4)})`;
     o.fill('evenodd');
     // The two cross streets.

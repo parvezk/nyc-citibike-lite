@@ -10,7 +10,6 @@ import { sunTimes } from '@/lib/sun';
 import {
   CHART_FROM_H,
   CHART_TO_H,
-  COPY,
   CUT_T,
   LITE_FPS,
   LITE_FRAMES,
@@ -26,6 +25,7 @@ import {
   dimAt,
   driftAt,
   fadeWindow,
+  headBoostAt,
   highlightAt,
   hookOpacity,
   hourAt,
@@ -158,6 +158,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   const legendRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const captionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const restRefs = useRef<Record<string, HTMLSpanElement | null>>({});
   const nowRef = useRef<SVGLineElement>(null);
   const nowRefSide = useRef<SVGLineElement>(null);
   const topInkRef = useRef<HTMLDivElement>(null);
@@ -270,6 +271,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     if (!paint) return;
 
     const dayFrac = dayFracAt(story.light, t);
+    r.setHeadBoost(headBoostAt(t, hour));
     r.present(dayFrac, risingAt(story.light, t));
     const hl = highlightAt(t);
     if (data.flows && hl.amount > 0) {
@@ -295,6 +297,8 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     for (const cap of story.text.captions) {
       const el = captionRefs.current[cap.id];
       if (el) el.style.opacity = fadeWindow(t, cap.from, cap.to, 0.25).toFixed(3);
+      const rest = restRefs.current[cap.id];
+      if (rest && cap.restFrom !== undefined) rest.style.opacity = fadeWindow(t, cap.restFrom, cap.to + 1, 0.25).toFixed(3);
     }
 
     // The chart: the whole day ghosted, drawn solid up to the story clock.
@@ -396,18 +400,6 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     : '';
   const u = g?.u ?? 0;
   const halo = '0 1px 12px rgba(var(--halo)), 0 0 3px rgba(var(--halo))';
-  const flowRow = (id: 'am' | 'pm') => {
-    const w = data?.flows?.windows.find(x => x.id === id);
-    if (!w || !data?.flows) return null;
-    return (
-      <div className="flex flex-wrap items-baseline" style={{ gap: `0.4em ${2.6 * u}px`, marginTop: 1.4 * u, fontSize: 3.8 * u, fontWeight: 500 }}>
-        <span><b className="font-extrabold tabular-nums">→ {fmt(w.in)}</b> {COPY.zoneIn}</span>
-        <span><b className="font-extrabold tabular-nums">← {fmt(w.out)}</b> {COPY.zoneOut}</span>
-        <span style={{ color: 'rgba(var(--ink),0.72)' }}>{w.label}</span>
-      </div>
-    );
-  };
-
   const stage = (
     <div
       ref={stageRef}
@@ -431,7 +423,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       <div
         ref={bottomScrimRef}
         className="pointer-events-none absolute inset-x-0 bottom-0"
-        style={{ ...INK_NIGHT, height: g ? (size?.h ?? 0) - g.chart.top + 7 * u : '30%', background: 'linear-gradient(to top, rgba(var(--paper),0.9) 0%, rgba(var(--paper),0.78) 70%, rgba(var(--paper),0) 100%)' }}
+        style={{ ...INK_NIGHT, height: g ? (size?.h ?? 0) - g.chart.top + 4 * u : '30%', background: 'linear-gradient(to top, rgba(var(--paper),0.9) 0%, rgba(var(--paper),0.85) 82%, rgba(var(--paper),0) 100%)' }}
       />
       <div ref={dimRef} className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: 0 }} />
 
@@ -465,7 +457,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
           {/* Captions, under the top band. */}
           <div ref={captionInkRef} className="absolute inset-0" style={{ ...INK_NIGHT, color: 'rgb(var(--ink))' }}>
             <div ref={hookRef} className="absolute" style={{ top: g.pad * 0.8 + 6 * u, left: g.pad, right: g.pad, textShadow: halo }}>
-              <div className="font-extrabold" style={{ fontSize: (layout === 'wide' ? 6.6 : 7) * u, lineHeight: 1.05, letterSpacing: '-0.015em', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookTitle}</div>
+              <div className="font-extrabold" style={{ fontSize: (layout === 'wide' ? 6.6 : 6.4) * u, lineHeight: 1.05, letterSpacing: '-0.02em', whiteSpace: 'pre-line', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookTitle}</div>
               <div className="font-semibold" style={{ fontSize: 4.2 * u, marginTop: 2 * u, lineHeight: 1.2, color: 'rgba(var(--ink),0.88)', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookSub}</div>
             </div>
 
@@ -477,20 +469,28 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
                 style={{ top: g.captionTop, left: g.pad, right: g.pad, maxWidth: layout === 'wide' ? '58%' : undefined, fontSize: 4.6 * u, lineHeight: 1.18, opacity: 0, textShadow: halo }}
               >
                 {c.text}
-                {c.id === 'midtownIn' && flowRow('am')}
-                {c.id === 'midtownOut' && flowRow('pm')}
+                {c.rest && <span ref={el => { restRefs.current[c.id] = el; }} style={{ opacity: 0 }}>{c.rest}</span>}
+                {c.tally && (
+                  <div className="font-semibold tabular-nums" style={{ marginTop: 1.4 * u, fontSize: 3.8 * u, color: 'rgba(var(--ink),0.85)' }}>{c.tally}</div>
+                )}
                 {c.id === 'night' && (
                   <div ref={legendRef} className="flex flex-wrap items-center font-medium" style={{ gap: `${1.2 * u}px ${3 * u}px`, marginTop: 2 * u, fontSize: 3.8 * u, opacity: 0 }}>
                     <span className="inline-flex items-center" style={{ gap: 1.2 * u }}>
-                      <svg width={9 * u} height={2 * u} viewBox="0 0 90 20" aria-hidden="true">
+                      <svg width={9 * u} height={2 * u} viewBox="0 0 90 20" aria-hidden="true" style={{ overflow: 'visible' }}>
                         <defs>
                           <linearGradient id="streak" gradientUnits="userSpaceOnUse" x1="2" x2="80" y1="10" y2="10">
                             <stop offset="0" stopColor="rgb(255,150,48)" stopOpacity="0" />
                             <stop offset="1" stopColor="rgb(255,150,48)" stopOpacity="1" />
                           </linearGradient>
                         </defs>
-                        <path d="M2 10 L80 10" stroke="url(#streak)" strokeWidth="5" strokeLinecap="round" />
-                        <circle cx="81" cy="10" r="6" fill="rgb(255,238,205)" />
+                        <defs>
+                          <filter id="head-glow" x="-1" y="-1" width="3" height="3">
+                            <feGaussianBlur stdDeviation="3" />
+                          </filter>
+                        </defs>
+                        <path d="M2 10 L76 10" stroke="url(#streak)" strokeWidth="4" strokeLinecap="round" />
+                        <circle cx="80" cy="10" r="8" fill="rgb(255,238,205)" filter="url(#head-glow)" />
+                        <circle cx="80" cy="10" r="5.5" fill="rgb(255,238,205)" />
                       </svg>
                       = {text.legendRide}
                     </span>
@@ -527,7 +527,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
                 </clipPath>
               </defs>
               <text x={0} y={2.6 * u} fontSize={2.8 * u} fontWeight={600} fill="rgba(var(--ink),0.8)" style={{ letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-                {text.chartTitle}
+                {layout === 'square' ? text.chartTitleShort : text.chartTitle}
               </text>
               <line x1={0} x2={g.chart.width} y1={g.chart.y(3000)} y2={g.chart.y(3000)} stroke="rgba(var(--ink),0.25)" strokeWidth={1.5} strokeDasharray={`${0.6 * u} ${0.8 * u}`} />
               <text x={g.chart.width} y={g.chart.y(3000) - 0.8 * u} fontSize={2.6 * u} fill="rgba(var(--ink),0.6)" textAnchor="end">3,000</text>
@@ -556,7 +556,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
                 return (
                   <g key={m.hour} ref={el => { markRefs.current[i] = el; }} style={{ opacity: 0 }}>
                     <circle cx={x} cy={y} r={0.75 * u} fill="rgb(var(--ink))" stroke="rgb(var(--paper))" strokeWidth={0.3 * u} />
-                    <text x={anchor === 'start' ? x - 0.5 * u : x} y={ty} textAnchor={anchor} fill="rgb(var(--ink))" style={{ paintOrder: 'stroke', stroke: 'rgba(var(--paper),0.9)', strokeWidth: 0.7 * u, strokeLinejoin: 'round' }}>
+                    <text x={anchor === 'start' ? x - 0.5 * u : x} y={ty} textAnchor={anchor} fill="rgb(var(--ink))" style={{ paintOrder: 'stroke', stroke: 'rgb(var(--paper))', strokeWidth: 1.5 * u, strokeLinejoin: 'round' }}>
                       <tspan fontSize={(dip ? 3.4 : 4.2) * u} fontWeight={800}>{m.value}</tspan>
                       <tspan fontSize={(dip ? 2.8 : 3.2) * u} fontWeight={600} dx={0.8 * u}>{m.time}</tspan>
                     </text>
