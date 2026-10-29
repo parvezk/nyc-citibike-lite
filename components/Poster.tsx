@@ -32,6 +32,8 @@ function Panel({ data, hour, night }: { data: Loaded; hour: number; night: boole
       r.fade(dh);
       r.drawWindow(h0, h0 + dh);
     }
+    // The night low has two dozen bikes: draw them as the video does at 3 AM.
+    r.setHeadBoost(hour < 4 ? 2.5 : 1);
     r.present(night ? 0 : 1, true);
     (window as unknown as { __panels?: number }).__panels = ((window as unknown as { __panels?: number }).__panels ?? 0) + 1;
   }, [data, hour, night]);
@@ -87,7 +89,7 @@ export default function Poster() {
           {(view?.text.posterTitle ?? '').split(/(?<=\.) /).map(line => <div key={line}>{line}</div>)}
         </div>
         {view && (
-          <div style={{ fontSize: 50, fontWeight: 500, marginTop: 30, color: '#333842', lineHeight: 1.25 }}>
+          <div style={{ fontSize: 46, fontWeight: 500, marginTop: 30, color: '#333842', lineHeight: 1.25 }}>
             Every Citi Bike ride that started or ended in Manhattan on {view.text.footer.split(' · ')[1]}: {fmt(data!.stats.totalTrips)} rides. Bikes moving at once, from {fmt(data!.stats.nightLow?.active ?? 0)} at night to {fmt(data!.stats.peakActive)} at the evening peak.
           </div>
         )}
