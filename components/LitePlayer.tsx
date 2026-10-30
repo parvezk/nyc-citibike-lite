@@ -244,6 +244,7 @@ export default function LitePlayer({ day, record, rides: ridesParam, cut: cutId 
     return {
       keys,
       light,
+      sun,
       text: storyText(s, data.flows, sun, light),
       series: chartSeries(s, data.startMs),
       marks,
@@ -316,7 +317,14 @@ export default function LitePlayer({ day, record, rides: ridesParam, cut: cutId 
     if (cardRef.current) cardRef.current.style.opacity = cardOpacity(t).toFixed(3);
     for (const cap of story.text.captions) {
       const el = captionRefs.current[cap.id];
-      if (el) el.style.opacity = fadeWindow(t, cap.from, cap.to, 0.25).toFixed(3);
+      let op = fadeWindow(t, cap.from, cap.to, 0.25);
+      // The long cut's warp stretches the tag's window; keep it to the hour
+      // after sunrise / sunset on the clock, so it never sits under 8:30 AM.
+      if (cut.id === 'long') {
+        const at = cap.id === 'sunrise' ? story.sun.sunrise : story.sun.sunset;
+        op *= Math.max(0, Math.min(1, (at + 1.25 - hour) / 0.25));
+      }
+      if (el) el.style.opacity = op.toFixed(3);
     }
 
     // The chart: the whole day ghosted, drawn solid up to the story clock.
