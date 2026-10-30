@@ -124,13 +124,14 @@ interface Geom {
 function geom(layout: Layout, w: number, h: number, series: Array<[number, number]>, peak: number): Geom {
   const u = Math.min(w, h) / 100;
   const pad = 6 * u;
-  const footerLines = layout === 'wide' ? 1 : 2;
+  const footerLines = 1;
   const footerH = 3.2 * u + footerLines * 2.4 * u * 1.3;
-  const chartH = Math.max(19 * u, Math.min(28 * u, 0.2 * h));
+  // The chart's title sits under its time axis, just above the footer.
+  const chartH = Math.max(22 * u, Math.min(31 * u, 0.22 * h));
   const top = h - footerH - chartH - 1.5 * u;
   const width = w - 2 * pad;
-  const base = chartH - 4.6 * u;
-  const plotTop = 4.2 * u;
+  const base = chartH - 8.2 * u;
+  const plotTop = 1.6 * u;
   // Headroom above the peak for its label.
   const max = peak / 0.74;
   const x = (hour: number) => ((hour - CHART_FROM_H) / (CHART_TO_H - CHART_FROM_H)) * width;
@@ -537,8 +538,8 @@ export default function LitePlayer({ day, record, rides: ridesParam, cut: cutId 
                   <rect ref={chartClipRef} x={-10} y={-g.chart.height} width={0} height={g.chart.height * 3} />
                 </clipPath>
               </defs>
-              <text x={0} y={2.6 * u} fontSize={2.8 * u} fontWeight={600} fill="rgba(var(--ink),0.8)" style={{ letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-                {layout === 'square' ? text.chartTitleShort : text.chartTitle}
+              <text x={0} y={g.chart.base + 7.6 * u} fontSize={2.8 * u} fontWeight={600} fill="rgba(var(--ink),0.8)" style={{ letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                {text.chartTitle}
               </text>
               <line x1={0} x2={g.chart.width} y1={g.chart.y(3000)} y2={g.chart.y(3000)} stroke="rgba(var(--ink),0.25)" strokeWidth={1.5} strokeDasharray={`${0.6 * u} ${0.8 * u}`} />
               <text x={g.chart.width} y={g.chart.y(3000) - 0.8 * u} fontSize={2.6 * u} fill="rgba(var(--ink),0.6)" textAnchor="end">3,000</text>

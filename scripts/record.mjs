@@ -16,6 +16,7 @@
  *   node scripts/record.mjs --format 4x5 --stills 0,300,510   # PNGs of those frames only
  *   node scripts/record.mjs --format 9x16
  *   node scripts/record.mjs --format 4x5 --cut long   # the 78 s cut with the moving camera
+ *   node scripts/record.mjs --format 4x5 --cut long --crf 24   # smaller file (default CRF 18, long 20)
  *   node scripts/record.mjs --day busiest          # a date or preset from data/days/index.json
  *   node scripts/record.mjs --url http://localhost:3000 --out out/clips
  */
@@ -36,6 +37,7 @@ const outDir = arg('out', path.join('out', 'clips'));
 const formatArg = arg('format', 'all');
 const day = arg('day', '');
 const cut = arg('cut', 'short');
+const crf = arg('crf', cut === 'long' ? '20' : '18');
 const stills = arg('stills', '') ? arg('stills', '').split(',').map(Number) : null;
 const formats = formatArg === 'all' ? Object.keys(SIZES) : [formatArg];
 for (const f of formats) {
@@ -95,7 +97,7 @@ try {
     const ffmpeg = spawn('ffmpeg', [
       '-y', '-loglevel', 'error',
       '-f', 'image2pipe', '-framerate', String(fps), '-i', '-',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', cut === 'long' ? '20' : '18', '-preset', 'slow', '-r', String(fps),
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', crf, '-preset', 'slow', '-r', String(fps),
       '-movflags', '+faststart', outFile,
     ], { stdio: ['pipe', 'inherit', 'inherit'] });
     const done = new Promise((resolve, reject) => {
