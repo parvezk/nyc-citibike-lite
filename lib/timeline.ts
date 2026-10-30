@@ -9,7 +9,7 @@
 //   15.4–19.0 s  peak        hold on 5:42 PM: 3,276 bikes
 //   19.0–21.6 s  midtown out Midtown outlined again (riders pour out)
 //   21.6–23.0 s  sunset      back to night
-//   23.0–27.0 s  end card    total rides and credit
+//   23.0–27.0 s  end card    total rides
 //
 // No sentences over the map: the counter, the clock and the chart carry the
 // story. The counter shows activeByMinute for the minute on the clock, and
@@ -34,6 +34,89 @@ export const LITE_FRAMES = Math.round(LITE_SECONDS * LITE_FPS);
 // The hook ends here and the clock jumps back to the night.
 export const CUT_T = 2.4;
 
+// ---------------------------------------------------------------------------
+// Two cuts. The short one (27 s) is the timeline below. The long one (78 s,
+// for LinkedIn) plays the same story slower: its time maps onto the short
+// cut's through a smooth monotone warp, so every hold, caption window, wipe
+// and Midtown outline keeps its place in the story; the holds last ~5 s,
+// both rush hours flow ~3x slower, midday still passes quickly. The long cut
+// also moves a camera along the island (cameraAt).
+// ---------------------------------------------------------------------------
+export type CutId = 'short' | 'long';
+
+export interface Cut {
+  id: CutId;
+  seconds: number;
+  frames: number;
+  /** Seconds of this cut -> seconds of the short cut's timeline. */
+  toStory: (t: number) => number;
+  camera: boolean;
+}
+
+// [long-cut seconds, short-cut seconds]
+const LONG_WARP: Keyframe[] = ([
+  [0, 0],
+  [5, CUT_T],    // hook: 5 s on the whole island at the peak
+  [9, 4.2],      // rewind to the night
+  [14, 5.4],     // hold 3:15 AM (24 bikes), 5 s
+  [23, 8.6],     // dawn, sunrise
+  [28, 9.7],     // into the morning rush
+  [33, 11.1],    // hold 8:49 AM (2,548), 5 s
+  [42, 13.8],    // Midtown fills up
+  [46, 15.4],    // midday, fast
+  [54, 17.2],    // into the evening rush
+  [59, 18.7],    // hold 5:42 PM (3,276), 5 s
+  [67, 21.6],    // Midtown empties
+  [71, 23.0],    // sunset, back to night
+  [78, 27],      // end card
+] as Array<[number, number]>).map(([t, hour]) => ({ t, hour }));
+
+export const CUTS: Record<CutId, Cut> = {
+  short: { id: 'short', seconds: 27, frames: 27 * 30, toStory: t => t, camera: false },
+  long: { id: 'long', seconds: 78, frames: 78 * 30, toStory: t => interpolateMonotone(LONG_WARP, t), camera: true },
+};
+
+// The long cut's camera, in its own seconds: [t, lng, lat, zoom]. Zoom is
+// relative to the wide view of the whole island (CAMERA_SPAN_M).
+export const CAMERA_SPAN_M = 30000;
+// The wide view's centre: the island from the Battery (just above the chart)
+// to Inwood (behind the title).
+export const ISLAND_CENTER: [number, number] = [-73.985, 40.7595];
+const ZOOM = 2.3;
+const FIDI: [number, number] = [-74.0065, 40.7115];
+const DOWNTOWN: [number, number] = [-74.003, 40.718];
+const MIDTOWN: [number, number] = [-73.983, 40.757];
+const SOUTH_PARK: [number, number] = [-73.9735, 40.7695];
+const NIGHT_VIEW: [number, number] = [-73.978, 40.768];
+const CAMERA: Array<[number, [number, number], number]> = [
+  [0, ISLAND_CENTER, 1],
+  [5, ISLAND_CENTER, 1],
+  [9, NIGHT_VIEW, 1.15],
+  [14, NIGHT_VIEW, 1.15],
+  [22, FIDI, ZOOM],
+  [26, DOWNTOWN, ZOOM],
+  [34, MIDTOWN, ZOOM],     // the AM Midtown window (~33.7-42.3 s)
+  [43, MIDTOWN, ZOOM],
+  [49, SOUTH_PARK, ZOOM],
+  [54, SOUTH_PARK, ZOOM],
+  [61, MIDTOWN, ZOOM],     // the PM Midtown window (~61.6-69.4 s)
+  [69.5, MIDTOWN, ZOOM],
+  [75, ISLAND_CENTER, 1],
+  [78, ISLAND_CENTER, 1],
+];
+const camKeys = (f: (k: (typeof CAMERA)[number]) => number): Keyframe[] => CAMERA.map(k => ({ t: k[0], hour: f(k) }));
+const CAM_LNG = camKeys(k => k[1][0]);
+const CAM_LAT = camKeys(k => k[1][1]);
+const CAM_ZOOM = camKeys(k => Math.log(k[2]));
+
+export function cameraAt(t: number): { lng: number; lat: number; zoom: number } {
+  return {
+    lng: interpolateMonotone(CAM_LNG, t),
+    lat: interpolateMonotone(CAM_LAT, t),
+    zoom: Math.exp(interpolateMonotone(CAM_ZOOM, t)),
+  };
+}
+
 const fmtInt = (n: number) => Math.round(n).toLocaleString('en-US');
 
 // ---------------------------------------------------------------------------
@@ -48,7 +131,6 @@ export const COPY = {
   sunrise: 'Sunrise {time}',
   sunset: 'Sunset {time}',
   cardBig: '{rides} rides',
-  credit: 'Visualization by Parvez Kose',
   footer: 'Data: Citi Bike System Data · {date} · rides starting or ending in Manhattan · routes estimated · Parvez Kose',
   chartTitle: 'Bikes moving, minute by minute',
   chartTitleShort: 'Bikes moving',
@@ -129,7 +211,7 @@ export interface StoryText {
   legendRide: string;
   legendStreet: string;
   captions: LiteCaption[];
-  card: { big: string; credit: string };
+  card: { big: string };
   footer: string;
   chartTitle: string;
   chartTitleShort: string;
@@ -187,7 +269,7 @@ export function storyText(
     legendRide: COPY.legendRide,
     legendStreet: COPY.legendStreet,
     captions,
-    card: { big: fill(COPY.cardBig, vars), credit: COPY.credit },
+    card: { big: fill(COPY.cardBig, vars) },
     footer: fill(COPY.footer, vars),
     chartTitle: COPY.chartTitle,
     chartTitleShort: COPY.chartTitleShort,

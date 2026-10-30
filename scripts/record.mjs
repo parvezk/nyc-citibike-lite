@@ -15,6 +15,7 @@
  *   node scripts/record.mjs                       # 4x5, 1x1, 16x9 and 9x16
  *   node scripts/record.mjs --format 4x5 --stills 0,300,510   # PNGs of those frames only
  *   node scripts/record.mjs --format 9x16
+ *   node scripts/record.mjs --format 4x5 --cut long   # the 78 s cut with the moving camera
  *   node scripts/record.mjs --day busiest          # a date or preset from data/days/index.json
  *   node scripts/record.mjs --url http://localhost:3000 --out out/clips
  */
@@ -34,6 +35,7 @@ const baseUrl = arg('url', 'http://localhost:3000');
 const outDir = arg('out', path.join('out', 'clips'));
 const formatArg = arg('format', 'all');
 const day = arg('day', '');
+const cut = arg('cut', 'short');
 const stills = arg('stills', '') ? arg('stills', '').split(',').map(Number) : null;
 const formats = formatArg === 'all' ? Object.keys(SIZES) : [formatArg];
 for (const f of formats) {
@@ -66,7 +68,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
     page.on('pageerror', e => console.warn(`  page error: ${e.message}`));
 
-    await page.goto(`${baseUrl}/?format=${format}&record=1${day ? `&day=${encodeURIComponent(day)}` : ''}`);
+    await page.goto(`${baseUrl}/?format=${format}&record=1${cut === 'long' ? '&cut=long' : ''}${day ? `&day=${encodeURIComponent(day)}` : ''}`);
     await page.waitForFunction(() => window.__clip?.isReady(), null, { timeout: 300000 });
     // Hide the Next.js dev badge if this is a dev server.
     await page.addStyleTag({ content: 'nextjs-portal { display: none !important; }' });
@@ -80,20 +82,20 @@ try {
         await page.evaluate(n => window.__clip.seek(n), f);
         if (!want.has(f)) continue;
         const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
-        const file = path.join(outDir, `still-${format}-${String(f).padStart(4, '0')}.png`);
+        const file = path.join(outDir, `still-${cut === 'long' ? 'long-' : ''}${format}-${String(f).padStart(4, '0')}.png`);
         fs.writeFileSync(file, Buffer.from(data, 'base64'));
         console.log(`  ${file}`);
       }
       await page.close();
       continue;
     }
-    const outFile = path.join(outDir, `one-day-of-citi-bike${day ? `-${day}` : ''}-${format}.mp4`);
+    const outFile = path.join(outDir, `one-day-of-citi-bike${day ? `-${day}` : ''}${cut === 'long' ? '-long' : ''}-${format}.mp4`);
     console.log(`🎬 ${format}: ${frames} frames at ${fps} fps -> ${outFile}`);
 
     const ffmpeg = spawn('ffmpeg', [
       '-y', '-loglevel', 'error',
       '-f', 'image2pipe', '-framerate', String(fps), '-i', '-',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'slow', '-r', String(fps),
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', cut === 'long' ? '20' : '18', '-preset', 'slow', '-r', String(fps),
       '-movflags', '+faststart', outFile,
     ], { stdio: ['pipe', 'inherit', 'inherit'] });
     const done = new Promise((resolve, reject) => {

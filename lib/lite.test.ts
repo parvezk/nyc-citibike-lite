@@ -1,5 +1,5 @@
 import { decodeCbr1, packJsonTrips, toX } from '@/lib/rides';
-import { liteClock, storyText, hourAt, scopeToManhattan, LITE_SECONDS, CUT_T, clockLabel, lightPlan, dayFracAt, inkDayAt, timeForHour, activeAtHour, type Flows } from '@/lib/timeline';
+import { CUTS, cameraAt, highlightAt, liteClock, storyText, hourAt, scopeToManhattan, LITE_SECONDS, CUT_T, clockLabel, lightPlan, dayFracAt, inkDayAt, timeForHour, activeAtHour, type Flows } from '@/lib/timeline';
 import { sunTimes } from '@/lib/sun';
 import type { DayStats } from '@/lib/story';
 
@@ -62,10 +62,51 @@ describe('lite timeline', () => {
     // No caption sentences: only the sunrise and sunset tags under the clock.
     expect(text.captions.map(c => c.id).sort()).toEqual(['sunrise', 'sunset']);
     for (const c of text.captions) expect(c.text).toMatch(/^Sun(rise|set) \d{1,2}:\d{2} (AM|PM)$/);
-    expect(text.card).toEqual({ big: '124,300 rides', credit: 'Visualization by Parvez Kose' });
+    expect(text.card).toEqual({ big: '124,300 rides' });
     expect(text.chartTitleLong).toBe('Bikes moving in Manhattan, minute by minute');
     expect(text.footer).toContain('Wed, Sep 23, 2026');
     expect(text.footer).toContain('Parvez Kose');
+  });
+
+  it('plays the long cut as the same story, slower, with ~5 s holds', () => {
+    const long = CUTS.long;
+    expect(long.frames).toBe(long.seconds * 30);
+    expect(long.seconds).toBeGreaterThanOrEqual(60);
+    expect(long.toStory(0)).toBe(0);
+    expect(long.toStory(long.seconds)).toBe(27);
+    let prev = -1;
+    for (let t = 0; t <= long.seconds; t += 1 / 30) {
+      const s = long.toStory(t);
+      expect(s).toBeGreaterThanOrEqual(prev);
+      prev = s;
+    }
+    const clock = liteClock(stats, start);
+    for (const n of [24, 2548, 3276]) {
+      let frames = 0;
+      for (let t = 0; t <= long.seconds; t += 1 / 30) {
+        if (activeAtHour(stats, start, hourAt(clock, long.toStory(t))) === n) frames++;
+      }
+      expect(frames / 30).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it('frames Midtown while it is outlined in the long cut, and the whole island at both ends', () => {
+    const long = CUTS.long;
+    const metres = (a: { lng: number; lat: number }, b: [number, number]) =>
+      Math.hypot((a.lng - b[0]) * 84400, (a.lat - b[1]) * 111000);
+    for (let t = 0; t <= long.seconds; t += 0.1) {
+      if (highlightAt(long.toStory(t)).amount > 0.5) {
+        const cam = cameraAt(t);
+        expect(metres(cam, [-73.983, 40.757])).toBeLessThan(400);
+        expect(cam.zoom).toBeGreaterThan(2.2);
+      }
+    }
+    expect(cameraAt(0).zoom).toBeCloseTo(1);
+    expect(cameraAt(long.seconds).zoom).toBeCloseTo(1);
+    // No jumps: the camera moves less than 1% of the island per frame.
+    for (let t = 0; t < long.seconds; t += 1 / 30) {
+      expect(metres(cameraAt(t), [cameraAt(t + 1 / 30).lng, cameraAt(t + 1 / 30).lat])).toBeLessThan(60);
+    }
   });
 
   it('formats the clock', () => {

@@ -29,6 +29,7 @@ Needs the app running, Playwright (`pnpm add -D playwright && npx playwright ins
 pnpm build && pnpm start
 node scripts/record.mjs                    # 4x5, 1x1, 16x9 and 9x16 into out/clips
 node scripts/record.mjs --format 4x5 --stills 0,540   # PNGs of single frames
+node scripts/record.mjs --format 4x5 --cut long   # the 78 s cut (/?cut=long): slower, with a camera moving up the island
 node scripts/poster.mjs                    # the stills from /poster?v=…: 4:5 cover, two map pairs, the chart, a 1200x630 link preview
 ```
 

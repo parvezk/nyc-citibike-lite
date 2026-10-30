@@ -10,11 +10,13 @@ import { sunTimes } from '@/lib/sun';
 import {
   CHART_FROM_H,
   CHART_TO_H,
+  CAMERA_SPAN_M,
+  CUTS,
   CUT_T,
+  ISLAND_CENTER,
   LITE_FPS,
-  LITE_FRAMES,
-  LITE_SECONDS,
   activeAtHour,
+  cameraAt,
   cardOpacity,
   chartGhost,
   chartSeries,
@@ -36,6 +38,7 @@ import {
   risingAt,
   scopeToManhattan,
   storyText,
+  type CutId,
   type Flows,
 } from '@/lib/timeline';
 import LiteStatsCard, { sparkX } from './LiteStatsCard';
@@ -50,6 +53,7 @@ interface Props {
   day?: string;
   record: boolean;
   rides?: RidesMode;
+  cut?: CutId;
 }
 
 interface Loaded {
@@ -151,7 +155,8 @@ function geom(layout: Layout, w: number, h: number, series: Array<[number, numbe
   };
 }
 
-export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
+export default function LitePlayer({ day, record, rides: ridesParam, cut: cutId }: Props) {
+  const cut = CUTS[cutId ?? 'short'];
   const ridesMode: RidesMode = ridesParam ?? (record ? 'all' : 'sample');
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -251,10 +256,13 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   }, [story, size, data, layout]);
 
   // ---- one frame: advance the trails, then paint canvas and words ---------
-  const step = useCallback((t: number, paint: boolean) => {
+  const step = useCallback((real: number, paint: boolean) => {
     const r = rendererRef.current;
     if (!r || !story || !data) return;
     const c = clock.current;
+    // Real seconds of this cut, for the camera; the story runs on the short
+    // cut's seconds.
+    const t = cut.toStory(real);
     const hour = hourAt(story.keys, t);
     if (c.prevT < 0 || t < c.prevT) {
       // From the top: pre-roll fifteen minutes of story so the first frame
@@ -280,6 +288,10 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     if (!paint) return;
 
     const dayFrac = dayFracAt(story.light, t);
+    if (cut.camera && g) {
+      const cam = cameraAt(real);
+      r.setCamera(cam.lng, cam.lat, cam.zoom, (size?.w ?? 0) / 2, (g.bandBottom + g.chart.top) / 2);
+    }
     r.setHeadBoost(headBoostAt(t, hour));
     r.present(dayFrac, risingAt(story.light, t));
     const hl = highlightAt(t);
@@ -294,7 +306,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     setInk(bottomScrimRef.current, inkDayAt(dayFrac, 0.88));
     setInk(fineInkRef.current, inkDayAt(dayFrac, 0.97));
     const d = driftAt(t);
-    if (driftRef.current) driftRef.current.style.transform = `scale(${d.scale.toFixed(4)}) rotate(${d.rotateDeg.toFixed(3)}deg)`;
+    if (driftRef.current && !cut.camera) driftRef.current.style.transform = `scale(${d.scale.toFixed(4)}) rotate(${d.rotateDeg.toFixed(3)}deg)`;
     if (dimRef.current) dimRef.current.style.opacity = dimAt(t).toFixed(3);
     if (clockRef.current) clockRef.current.textContent = clockLabel(hour);
     const active = activeAtHour(data.stats, data.startMs, hour);
@@ -331,17 +343,18 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       line?.setAttribute('x1', sx);
       line?.setAttribute('x2', sx);
     }
-  }, [story, data, g, size]);
+  }, [story, data, g, size, cut]);
 
   // ---- renderer (rebuilt when the stage or the data changes) --------------
   useEffect(() => {
     if (!data || !size || !canvasRef.current || size.w < 10 || size.h < 10) return;
     const dpr = record ? 1 : Math.min(2, window.devicePixelRatio || 1);
-    rendererRef.current = new LiteRenderer(canvasRef.current, data.rides, { width: size.w, height: size.h, dpr }, data.outline);
+    const camera = cut.camera ? { spanM: CAMERA_SPAN_M, center: ISLAND_CENTER, detail: 2.3 } : undefined;
+    rendererRef.current = new LiteRenderer(canvasRef.current, data.rides, { width: size.w, height: size.h, dpr }, data.outline, camera);
     clock.current.prevT = -1;
     clock.current.frame = -1;
     return () => { rendererRef.current = null; };
-  }, [data, size, record]);
+  }, [data, size, record, cut]);
 
   // A rebuilt renderer starts blank, and the frame loop only paints while
   // playing: paint the current moment once, so a resize or rotation while
@@ -362,26 +375,26 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       last = now;
       const c = clock.current;
       if (c.playing) {
-        c.t = (c.t + dt) % LITE_SECONDS;
+        c.t = (c.t + dt) % cut.seconds;
         step(c.t, true);
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [record, story, step]);
+  }, [record, story, step, cut]);
 
   // ---- recorder hooks: deterministic frame stepping ---------------------------
   useEffect(() => {
     if (!record) return;
     const dt = 1 / LITE_FPS;
     const api: ClipApi = {
-      frames: LITE_FRAMES,
+      frames: cut.frames,
       fps: LITE_FPS,
       isReady: () => rendererRef.current !== null && story !== null && g !== null,
       seek: async (frame: number) => {
         const c = clock.current;
-        const target = ((frame % LITE_FRAMES) + LITE_FRAMES) % LITE_FRAMES;
+        const target = ((frame % cut.frames) + cut.frames) % cut.frames;
         if (target !== c.frame + 1) {
           // Replay from the top so the trails are exactly what playback shows.
           c.prevT = -1;
@@ -395,7 +408,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     };
     (window as unknown as { __clip?: ClipApi }).__clip = api;
     return () => { delete (window as unknown as { __clip?: ClipApi }).__clip; };
-  }, [record, story, step, g]);
+  }, [record, story, step, g, cut]);
 
   const togglePlay = () => {
     clock.current.playing = !clock.current.playing;
@@ -506,7 +519,6 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
             style={{ top: g.bandBottom, bottom: (size?.h ?? 0) - g.chart.top, left: g.pad, right: g.pad, opacity: 0, textShadow: '0 1px 14px rgba(0,0,0,0.9)' }}
           >
             <div className="font-extrabold tabular-nums" style={{ fontSize: 7 * u, lineHeight: 1, letterSpacing: '-0.02em' }}>{text.card.big}</div>
-            <div className="font-semibold" style={{ fontSize: 3.6 * u, marginTop: 2.6 * u, color: 'rgba(255,255,255,0.92)' }}>{text.card.credit}</div>
           </div>
 
           {/* The chart of bikes moving. */}
@@ -597,7 +609,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
               {statsOpen ? 'Close' : 'The day in numbers'}
             </button>
           )}
-          <div className="ml-auto hidden text-xs text-white/60 lg:block">{LITE_SECONDS} s story</div>
+          <div className="ml-auto hidden text-xs text-white/60 lg:block">{cut.seconds} s story</div>
         </div>
         {stats && data && statsOpen && (
           <div id="lite-stats-sheet" className="absolute inset-x-3 bottom-16 flex justify-center lg:hidden">

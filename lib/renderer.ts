@@ -32,6 +32,19 @@ export interface StageSize {
   dpr: number;
 }
 
+/**
+ * A moving camera (the long cut). The map is drawn once at the wide view,
+ * the whole island across `spanM` metres of the long side, `detail` times
+ * sharper than the frame; each frame then shows a part of it, zoomed in up
+ * to `detail` times without blur. Trails, streets, heads and the Midtown
+ * band all live in that one space, so they stay registered as it moves.
+ */
+export interface CameraOptions {
+  spanM: number;
+  center: [number, number];   // [lng, lat] at the middle of the wide view
+  detail: number;
+}
+
 /** Outer rings of the island outline, [lng, lat]. */
 export type Outline = Array<Array<[number, number]>>;
 
@@ -100,11 +113,19 @@ export class LiteRenderer {
   private landscape: boolean;
   private font: string;
   private headBoost = 1;
+  // The world canvases cover this rect of wide-view CSS px, at `res` device
+  // px per CSS px. Without a camera it is the frame itself at dpr.
+  private world: { x: number; y: number; w: number; h: number; res: number };
+  private lineK: number;
+  private hasCamera: boolean;
+  // Camera: wide-view point (cx, cy) shows at screen point (ax, ay), zoomed c.
+  private cam = { c: 1, cx: 0, cy: 0, ax: 0, ay: 0 };
 
-  constructor(canvas: HTMLCanvasElement, rides: RideSet, size: StageSize, outline: Outline | null) {
+  constructor(canvas: HTMLCanvasElement, rides: RideSet, size: StageSize, outline: Outline | null, camera?: CameraOptions) {
     this.size = size;
     this.rides = rides;
     const { width: W, height: H, dpr } = size;
+    this.hasCamera = !!camera;
     const landscape = W > H * 1.15;
     // Manhattan's grid runs ~29° east of north: stand it up (or lay it flat
     // for landscape frames).
@@ -115,11 +136,11 @@ export class LiteRenderer {
     // words at the top and the chart at the bottom; a square frame sits the
     // island a little lower for the same reason.
     const square = Math.abs(W - H) < 0.15 * Math.max(W, H);
-    const k = (Math.max(W, H) / SPAN_M) * (landscape ? 0.8 : 1);
+    const k = camera ? Math.max(W, H) / camera.spanM : (Math.max(W, H) / SPAN_M) * (landscape ? 0.8 : 1);
     // Square: Midtown (34th-59th St) sits between the caption block and the
     // chart, so both of its edges show when it is outlined.
-    const anchorY = square ? 0.67 : landscape ? 0.5 : ANCHOR_Y;
-    const x0 = toX(CENTER_LNG), y0 = toY(CENTER_LAT);
+    const anchorY = camera ? 0.5 : square ? 0.67 : landscape ? 0.5 : ANCHOR_Y;
+    const x0 = toX(camera ? camera.center[0] : CENTER_LNG), y0 = toY(camera ? camera.center[1] : CENTER_LAT);
     const cx = x0 * cb - y0 * sb, cy = x0 * sb + y0 * cb;
     const fromMetres = (x: number, y: number): [number, number] => [
       W / 2 + (x * cb - y * sb - cx) * k,
@@ -130,6 +151,14 @@ export class LiteRenderer {
     this.outline = outline;
     this.landscape = landscape;
     this.font = getComputedStyle(canvas).fontFamily || 'system-ui, sans-serif';
+    // A margin around the wide view, so a zoomed-in view near the island's
+    // ends still has map under it.
+    this.world = camera
+      ? { x: -0.05 * W, y: -0.05 * H, w: 1.1 * W, h: 1.1 * H, res: dpr * camera.detail }
+      : { x: 0, y: 0, w: W, h: H, res: dpr };
+    // Lines are drawn in wide-view px: thinner, so they read at 1x and 2x.
+    this.lineK = camera ? 0.5 : 1;
+    this.cam = { c: 1, cx: W / 2, cy: H / 2, ax: W / 2, ay: H / 2 };
 
     // Project once into screen space; the camera never moves (the drift is a
     // CSS transform on the canvas).
@@ -152,8 +181,8 @@ export class LiteRenderer {
 
     const mk = () => {
       const c = document.createElement('canvas');
-      c.width = Math.round(W * dpr);
-      c.height = Math.round(H * dpr);
+      c.width = Math.round(this.world.w * this.world.res);
+      c.height = Math.round(this.world.h * this.world.res);
       return c;
     };
     this.ghostNight = mk();
@@ -161,7 +190,7 @@ export class LiteRenderer {
     this.trailCanvas = mk();
     this.tint = mk();
     this.trail = this.trailCanvas.getContext('2d')!;
-    this.trail.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.worldT(this.trail);
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     this.out = canvas.getContext('2d', { alpha: false })!;
@@ -175,7 +204,7 @@ export class LiteRenderer {
     // and 900 bikes look clearly thinner than 3,000.
     this.streakOp = 'lighter';
     this.streakCss = rgba(NIGHT.trail, this.density < 1 ? 0.2 : 0.6);
-    this.streakWidth = (this.density < 1 ? 1.5 : 1.7) * this.scale;
+    this.streakWidth = (this.density < 1 ? 1.5 : 1.7) * this.scale * this.lineK;
     this.headRadius = (this.density < 1 ? 1.3 : 1.5) * this.scale;
 
     this.drawGhost(this.ghostNight, 'night', outline);
@@ -186,11 +215,50 @@ export class LiteRenderer {
     return this.rides.count;
   }
 
-  // Skip rides that start and end well outside the frame.
-  private visible(r: number): boolean {
+  // Draw into a world canvas in wide-view CSS px.
+  private worldT(g: CanvasRenderingContext2D) {
+    const { x, y, res } = this.world;
+    g.setTransform(res, 0, 0, res, -x * res, -y * res);
+  }
+
+  // Draw onto the frame in wide-view CSS px, through the camera.
+  private camT(g: CanvasRenderingContext2D) {
+    const { c, cx, cy, ax, ay } = this.cam;
+    const d = this.size.dpr;
+    g.setTransform(d * c, 0, 0, d * c, d * (ax - c * cx), d * (ay - c * cy));
+  }
+
+  /**
+   * Point the camera (only with CameraOptions): the map point at [lng, lat]
+   * shows at screen point (anchorX, anchorY) CSS px, zoomed `zoom` times the
+   * wide view (1 = the whole island).
+   */
+  setCamera(lng: number, lat: number, zoom: number, anchorX: number, anchorY: number) {
+    if (!this.hasCamera) return;
+    const [cx, cy] = this.project(lng, lat);
+    this.cam = { c: Math.max(1, zoom), cx, cy, ax: anchorX, ay: anchorY };
+  }
+
+  // Copy a world canvas onto the frame through the camera, reading only the
+  // part in view.
+  private blit(src: HTMLCanvasElement) {
+    const o = this.out;
+    const { x, y, w, h, res } = this.world;
+    const { c, cx, cy, ax, ay } = this.cam;
     const { width: W, height: H } = this.size;
+    // The view in wide-view px, clipped to the world.
+    const vx0 = Math.max(x, cx - ax / c - 2), vy0 = Math.max(y, cy - ay / c - 2);
+    const vx1 = Math.min(x + w, cx + (W - ax) / c + 2), vy1 = Math.min(y + h, cy + (H - ay) / c + 2);
+    if (vx1 <= vx0 || vy1 <= vy0) return;
+    this.camT(o);
+    o.drawImage(src, (vx0 - x) * res, (vy0 - y) * res, (vx1 - vx0) * res, (vy1 - vy0) * res, vx0, vy0, vx1 - vx0, vy1 - vy0);
+  }
+
+  // Skip rides that start and end well outside the world.
+  private visible(r: number): boolean {
+    const { x: X, y: Y, w: W, h: H } = this.world;
     const i = this.rides.offsets[r], j = this.rides.offsets[r + 1] - 1;
-    const off = (x: number, y: number) => x < -W * 0.1 || x > W * 1.1 || y < -H * 0.1 || y > H * 1.1;
+    const off = (x: number, y: number) => x < X - W * 0.1 || x > X + W * 1.1 || y < Y - H * 0.1 || y > Y + H * 1.1;
     return !(off(this.rx[i], this.ry[i]) && off(this.rx[j], this.ry[j]));
   }
 
@@ -205,14 +273,14 @@ export class LiteRenderer {
   // The static map: background, island, and every street the day's rides
   // used, thinned to ~12k rides (more adds nothing but noise).
   private drawGhost(c: HTMLCanvasElement, mode: 'night' | 'day', outline: Outline | null) {
-    const { dpr } = this.size;
     const g = c.getContext('2d')!;
     const night = mode === 'night';
     const theme = night ? NIGHT : DAY;
     g.fillStyle = theme.bg;
     g.fillRect(0, 0, c.width, c.height);
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const s = this.scale;
+    this.worldT(g);
+    const s = this.scale * this.lineK;
+    const { x: wx, y: wy, w: ww, h: wh } = this.world;
 
     if (outline && !night) {
       g.fillStyle = DAY.land;
@@ -227,8 +295,8 @@ export class LiteRenderer {
       g.lineWidth = 0.6 * s;
       const step = 34 * s;
       g.beginPath();
-      for (let x = (this.size.width % step) / 2; x < this.size.width; x += step) { g.moveTo(x, 0); g.lineTo(x, this.size.height); }
-      for (let y = (this.size.height % step) / 2; y < this.size.height; y += step) { g.moveTo(0, y); g.lineTo(this.size.width, y); }
+      for (let x = wx + (ww % step) / 2; x < wx + ww; x += step) { g.moveTo(x, wy); g.lineTo(x, wy + wh); }
+      for (let y = wy + (wh % step) / 2; y < wy + wh; y += step) { g.moveTo(wx, y); g.lineTo(wx + ww, y); }
       g.stroke();
     }
 
@@ -340,8 +408,12 @@ export class LiteRenderer {
     this.headBoost = Math.max(1, k);
   }
 
-  private drawHeads(color: RGB, alpha: number, radius: number, glow = 0) {
+  private drawHeads(color: RGB, alpha: number, radiusPx: number, glow = 0) {
     const o = this.out;
+    this.camT(o);
+    // Heads keep about their size on screen as the camera zooms.
+    const c = this.cam.c;
+    const radius = this.hasCamera ? (radiusPx * (0.75 + 0.25 * c)) / c : radiusPx;
     o.fillStyle = rgba(color, alpha);
     if (glow > 0) {
       o.shadowColor = rgba(color, 1);
@@ -359,11 +431,10 @@ export class LiteRenderer {
 
   private paintNight() {
     const o = this.out;
-    o.setTransform(1, 0, 0, 1, 0, 0);
-    o.drawImage(this.ghostNight, 0, 0);
+    this.paintBg(NIGHT.bg);
+    this.blit(this.ghostNight);
     o.globalCompositeOperation = 'lighter';
-    o.drawImage(this.trailCanvas, 0, 0);
-    o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
+    this.blit(this.trailCanvas);
     o.globalCompositeOperation = 'source-over';
     const b = this.headBoost;
     this.drawHeads(NIGHT.head, this.density < 1 ? 0.85 + 0.15 * Math.min(1, b - 1) : 0.95, this.headRadius * b, b > 1.01 ? 12 * (b - 1) / 1.5 * (this.scale / 1.4) : 0);
@@ -378,13 +449,23 @@ export class LiteRenderer {
     t.globalCompositeOperation = 'source-in';
     t.fillStyle = rgba(DAY.trail, 1);
     t.fillRect(0, 0, this.tint.width, this.tint.height);
-    o.setTransform(1, 0, 0, 1, 0, 0);
-    o.drawImage(this.ghostDay, 0, 0);
+    this.paintBg(DAY.bg);
+    this.blit(this.ghostDay);
     o.globalCompositeOperation = 'multiply';
-    o.drawImage(this.tint, 0, 0);
+    this.blit(this.tint);
     o.globalCompositeOperation = 'source-over';
-    o.setTransform(this.size.dpr, 0, 0, this.size.dpr, 0, 0);
     this.drawHeads(DAY.head, this.density < 1 ? 0.75 : 0.8, this.headRadius * 0.9);
+  }
+
+  // Paper or night around the world rect (only a camera can show past it).
+  private paintBg(color: string) {
+    const o = this.out;
+    o.setTransform(1, 0, 0, 1, 0, 0);
+    if (this.hasCamera) {
+      o.fillStyle = color;
+      o.fillRect(0, 0, o.canvas.width, o.canvas.height);
+      o.imageSmoothingQuality = 'high';
+    }
   }
 
   // The scan line, with a band of TRON grid trailing on its night side.
@@ -450,22 +531,23 @@ export class LiteRenderer {
       const v = Math.round(255 + (24 - 255) * h.day);
       return `rgba(${v},${v},${v + Math.round(4 * h.day)},${(alpha * a).toFixed(4)})`;
     };
+    const c = this.cam.c;
     o.save();
-    o.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.camT(o);
     // Veil the rest of the island a little so the band stands out.
     o.save();
     o.beginPath();
     for (const ring of this.outline) this.tracePath(o, ring);
     o.clip();
     o.beginPath();
-    o.rect(-W, -H, 3 * W, 3 * H);
+    o.rect(-3 * W, -3 * H, 7 * W, 7 * H);
     this.bandPath(o, z, false);
     o.fillStyle = h.day > 0.5 ? `rgba(239,238,233,${(0.55 * a).toFixed(4)})` : `rgba(0,0,0,${(0.5 * a).toFixed(4)})`;
     o.fill('evenodd');
     // The two cross streets.
     o.strokeStyle = ink(0.95);
-    o.lineWidth = 1.6 * s;
-    o.setLineDash([5 * s, 4 * s]);
+    o.lineWidth = (1.6 * s) / c;
+    o.setLineDash([(5 * s) / c, (4 * s) / c]);
     for (const along of [z.alongFromM, z.alongToM]) {
       const [x0, y0] = this.zonePoint(z, along, -6000);
       const [x1, y1] = this.zonePoint(z, along, 3000);
@@ -480,7 +562,10 @@ export class LiteRenderer {
     // The name sits just off the island's west shore (the Hudson is empty);
     // in a wide frame, where the west shore is under the words, on the band.
     const mid = (z.alongFromM + z.alongToM) / 2;
-    const [lx, ly] = this.zonePoint(z, mid, this.landscape ? WEST_SHORE_ACROSS_M + 1500 : WEST_SHORE_ACROSS_M - 250);
+    const [wx, wy] = this.zonePoint(z, mid, this.landscape ? WEST_SHORE_ACROSS_M + 1500 : WEST_SHORE_ACROSS_M - 250);
+    // To screen px: the label keeps its size whatever the zoom.
+    const lx = this.cam.ax + (wx - this.cam.cx) * c, ly = this.cam.ay + (wy - this.cam.cy) * c;
+    o.setTransform(dpr, 0, 0, dpr, 0, 0);
     const m = Math.min(W, H);
     const size = Math.round(0.037 * m);
     o.font = `700 ${size}px ${this.font}`;
