@@ -343,6 +343,15 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     return () => { rendererRef.current = null; };
   }, [data, size, record]);
 
+  // A rebuilt renderer starts blank, and the frame loop only paints while
+  // playing: paint the current moment once, so a resize or rotation while
+  // paused does not leave an empty stage. (Runs after the effect above, in
+  // the same commit, whenever the renderer or the frame function changes.)
+  useEffect(() => {
+    if (record || !story || !g || !rendererRef.current) return;
+    step(clock.current.t, true);
+  }, [record, story, g, step, data, size]);
+
   // ---- live playback ------------------------------------------------------------
   useEffect(() => {
     if (record || !story) return;
