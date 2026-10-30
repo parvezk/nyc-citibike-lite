@@ -1,18 +1,19 @@
 // The story: one day of Citi Bike in Manhattan, in 27 seconds.
 //
-//    0.0– 2.4 s  hook        5:42 PM, the busiest minute, with the title
+//    0.0– 2.4 s  hook        5:42 PM, the busiest minute, under the title
 //    2.4– 6.0 s  how to read rewind to 3 AM; hold on 3:15 AM: 24 bikes; legend
 //    6.0– 8.6 s  sunrise     the clock speeds up; the scan line brings the day
 //    8.6–11.2 s  morning     hold on 8:49 AM: 2,548 bikes
-//   11.2–13.8 s  midtown in  nearly twice as many ride into Midtown as out
+//   11.2–13.8 s  midtown in  Midtown outlined (riders pour in)
 //   13.8–15.4 s  midday      passes quickly; the chart dips to ~900
-//   15.4–19.0 s  peak        hold on 5:42 PM: 3,276 bikes, 29% above the morning
-//   19.0–21.6 s  midtown out 1.7x as many ride out as in
+//   15.4–19.0 s  peak        hold on 5:42 PM: 3,276 bikes
+//   19.0–21.6 s  midtown out Midtown outlined again (riders pour out)
 //   21.6–23.0 s  sunset      back to night
-//   23.0–27.0 s  end card    the day in one line, source, credit
+//   23.0–27.0 s  end card    total rides and credit
 //
-// The counter shows activeByMinute for the minute on the clock, and every
-// hold sits inside one minute, so counter and caption always agree.
+// No sentences over the map: the counter, the clock and the chart carry the
+// story. The counter shows activeByMinute for the minute on the clock, and
+// every hold sits inside one minute, so counter and chart label agree.
 //
 // All on-screen words live in COPY below, so they can be edited in one place.
 // Pure functions only, so the same timeline drives the live page and the
@@ -39,32 +40,19 @@ const fmtInt = (n: number) => Math.round(n).toLocaleString('en-US');
 // Words. {placeholders} are filled from the day's data.
 // ---------------------------------------------------------------------------
 export const COPY = {
-  kicker: 'One day of Citi Bike · Manhattan',
+  title: 'One day of Citi Bike',
+  subtitle: 'Manhattan',
   counterLabel: 'bikes moving right now',
-  hookTitle: 'Two rush hours.\nThe evening one is bigger.',
-  hookSub: 'Every Citi Bike ride in Manhattan on {dateLong}: from {low} bikes moving at {lowTime} to {peak} at {peakTime}',
-  night: 'The quietest minute: only {low} bikes moving',
   legendRide: 'one bike riding right now',
   legendStreet: 'streets',
-  // Captions with a number come in two parts: the second part appears when
-  // the counter reaches the number (the hold).
-  morning: 'Morning rush',
-  morningRest: ': {am} bikes at {amTime}',
-  midtownIn: 'Midtown pulls riders in: nearly twice as many arrive as leave',
-  peak: 'Evening rush',
-  peakRest: ': {peak} bikes at {peakTime}, the day’s peak, {pct}% above the morning',
-  tallyAm: '{in} rides in · {out} out · {label}',
-  tallyPm: '{out} rides out · {in} in · {label}',
-  midtownOut: 'Then Midtown pushes them out: {ratio}× as many leave as arrive',
   sunrise: 'Sunrise {time}',
   sunset: 'Sunset {time}',
   cardBig: '{rides} rides',
-  cardLine: 'Low: {low} bikes at {lowTime}\nPeak: {peak} at {peakTime}',
-  cardSmall: 'Evening rush {pct}% above the morning',
+  credit: 'Visualization by Parvez Kose',
   footer: 'Data: Citi Bike System Data · {date} · rides starting or ending in Manhattan · routes estimated · Parvez Kose',
   chartTitle: 'Bikes moving, minute by minute',
   chartTitleShort: 'Bikes moving',
-  posterTitle: 'Two rush hours. The evening one is {pct}% bigger.',
+  chartTitleLong: 'Bikes moving in Manhattan, minute by minute',
 };
 
 export function fill(template: string, vars: Record<string, string | number>): string {
@@ -125,33 +113,27 @@ export interface Flows {
   windows: Array<{ id: string; label: string; from: number; to: number; arrivals: number; departures: number; in: number; out: number; net: number }>;
 }
 
-export type CaptionId = 'night' | 'morning' | 'midtownIn' | 'peak' | 'midtownOut' | 'sunrise' | 'sunset';
+export type CaptionId = 'sunrise' | 'sunset';
 
 export interface LiteCaption {
   id: CaptionId;
   from: number;
   to: number;
   text: string;
-  // Appended at restFrom, when the counter reaches the caption's number.
-  rest?: string;
-  restFrom?: number;
-  // The Midtown counts under a caption.
-  tally?: string;
 }
 
 export interface StoryText {
-  kicker: string;
+  title: string;
+  subtitle: string;
   counterLabel: string;
-  hookTitle: string;
-  hookSub: string;
   legendRide: string;
   legendStreet: string;
   captions: LiteCaption[];
-  card: { big: string; line: string; small: string };
+  card: { big: string; credit: string };
   footer: string;
   chartTitle: string;
   chartTitleShort: string;
-  posterTitle: string;
+  chartTitleLong: string;
 }
 
 export function storyText(
@@ -186,16 +168,9 @@ export function storyText(
   const pm = flows?.windows.find(w => w.id === 'pm');
   if (pm) vars.ratio = (pm.out / pm.in).toFixed(1);
 
-  const amFlow = flows?.windows.find(w => w.id === 'am');
-  const tally = (tpl: string, w: { in: number; out: number; label: string }) => fill(tpl, { in: fmtInt(w.in), out: fmtInt(w.out), label: w.label });
+  // No sentences on the video: the only timed words are the sun tags under
+  // the clock. The numbers speak through the counter and the chart.
   const captions: LiteCaption[] = [];
-  // The night caption starts with the 3:15 hold, when the counter reads 24.
-  if (low) captions.push({ id: 'night', from: 4.2, to: 6.7, text: fill(COPY.night, vars) });
-  if (am) captions.push({ id: 'morning', from: 8.7, to: 11.25, text: fill(COPY.morning, vars), rest: fill(COPY.morningRest, vars), restFrom: 9.7 });
-  if (flows && amFlow) captions.push({ id: 'midtownIn', from: 11.3, to: 13.9, text: fill(COPY.midtownIn, vars), tally: tally(COPY.tallyAm, amFlow) });
-  if (am) captions.push({ id: 'peak', from: 15.5, to: 19.7, text: fill(COPY.peak, vars), rest: fill(COPY.peakRest, vars), restFrom: 17.2 });
-  else captions.push({ id: 'peak', from: 15.5, to: 19.7, text: fill('Rush hour: {peak} bikes at {peakTime}', vars) });
-  if (flows && pm) captions.push({ id: 'midtownOut', from: 19.75, to: 22.4, text: fill(COPY.midtownOut, vars), tally: tally(COPY.tallyPm, pm) });
   if (sun && plan) {
     // The wipes start when the clock reaches sunrise / sunset; the tags ride along.
     const rise = plan.wipes.find(w => w.toDay);
@@ -206,18 +181,17 @@ export function storyText(
   }
 
   return {
-    kicker: COPY.kicker,
+    title: COPY.title,
+    subtitle: COPY.subtitle,
     counterLabel: COPY.counterLabel,
-    hookTitle: fill(COPY.hookTitle, vars),
-    hookSub: low ? fill(COPY.hookSub, vars) : '',
     legendRide: COPY.legendRide,
     legendStreet: COPY.legendStreet,
     captions,
-    card: { big: fill(COPY.cardBig, vars), line: low ? fill(COPY.cardLine, vars) : '', small: low ? fill(COPY.cardSmall, vars) : '' },
+    card: { big: fill(COPY.cardBig, vars), credit: COPY.credit },
     footer: fill(COPY.footer, vars),
     chartTitle: COPY.chartTitle,
     chartTitleShort: COPY.chartTitleShort,
-    posterTitle: fill(COPY.posterTitle, vars),
+    chartTitleLong: COPY.chartTitleLong,
   };
 }
 
@@ -248,7 +222,7 @@ export function chartGhost(t: number): number {
   return t < CUT_T ? 0.35 : 0.12;
 }
 
-// Midtown lights up while its captions are on screen.
+// Midtown is outlined during the two rush-hour windows (in, then out).
 export function highlightAt(t: number): { amount: number; window: 'am' | 'pm' } {
   if (t < 16) return { amount: fadeWindow(t, 11.3, 13.9, 0.35), window: 'am' };
   return { amount: fadeWindow(t, 19.75, 22.4, 0.35), window: 'pm' };

@@ -1,6 +1,6 @@
 # One day of Citi Bike (lite)
 
-Every Citi Bike ride in Manhattan on one day, as a 27-second story you can read with the sound off: the quietest minute of the night (24 bikes moving), the morning rush (2,548), Midtown filling up and emptying out, and the evening peak (3,276 bikes at once). A live chart of bikes moving, minute by minute, draws along the bottom, and the clock holds on each key minute so the counter and the caption agree. Made to be shared as a short clip on LinkedIn, X and Substack, and to load fast on a phone.
+Every Citi Bike ride in Manhattan on one day, as a 27-second story with almost no words over the map: a title, a live counter of bikes moving, the clock, and a chart of bikes moving, minute by minute, drawn along the bottom. The clock holds on the quietest minute of the night (24 bikes moving), the morning rush (2,548) and the evening peak (3,276 bikes at once), and Midtown is outlined while it fills up and empties out. Made to be shared as a short clip on LinkedIn, X and Substack, and to load fast on a phone.
 
 The light follows the sun. Night is a TRON-like grid of cyan streets, a neon coastline and orange light trails. At sunrise a glowing scan line sweeps up the frame and leaves a paper-white day behind it, with grey streets and vivid trails; at sunset it sweeps back down. Sunrise and sunset come from the date (`lib/sun.ts`).
 
@@ -29,7 +29,7 @@ Needs the app running, Playwright (`pnpm add -D playwright && npx playwright ins
 pnpm build && pnpm start
 node scripts/record.mjs                    # 4x5, 1x1, 16x9 and 9x16 into out/clips
 node scripts/record.mjs --format 4x5 --stills 0,540   # PNGs of single frames
-node scripts/poster.mjs                    # the 2160x2700 poster (/poster) and a 1200x630 crop
+node scripts/poster.mjs                    # the stills from /poster?v=…: 4:5 cover, two map pairs, the chart, a 1200x630 link preview
 ```
 
 The recorder steps the loop frame by frame (`window.__clip.seek`) and draws every ride, so the output is identical on every run.
@@ -61,4 +61,4 @@ node scripts/sync-data.mjs ../nyc-urban-mobility-dev
 | `lib/rides.ts` | loads the sample JSON or the cbr1 chunks into flat typed arrays |
 | `components/LitePlayer.tsx` | the page: frame loop, words on screen, recorder hooks |
 | `components/LiteStatsCard.tsx` | the compact day-in-numbers card |
-| `components/Poster.tsx` | the poster: five moments as small multiples, the annotated day chart, the source |
+| `components/Poster.tsx` | the stills: four maps (count and time only), map pairs, the annotated day chart, the link preview |

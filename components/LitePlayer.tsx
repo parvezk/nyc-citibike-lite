@@ -27,7 +27,6 @@ import {
   fadeWindow,
   headBoostAt,
   highlightAt,
-  hookOpacity,
   hourAt,
   inkDayAt,
   legendOpacity,
@@ -98,7 +97,12 @@ interface Mark { hour: number; v: number; value: string; time: string; place: 'a
 interface Geom {
   u: number;
   pad: number;
-  captionTop: number;
+  // Type sizes for the top band: the title is the largest word on screen.
+  title: number;
+  subtitle: number;
+  count: number;
+  counterTop: number;   // y of the counter row
+  bandBottom: number;   // y under the counter row (and the legend)
   chart: {
     left: number;
     top: number;
@@ -130,10 +134,18 @@ function geom(layout: Layout, w: number, h: number, series: Array<[number, numbe
   const pts = series.map(([hr, v]) => `${x(hr).toFixed(1)} ${y(v).toFixed(1)}`);
   const line = pts.length ? `M${x(CHART_FROM_H).toFixed(1)} ${y(series[0][1]).toFixed(1)} L${pts.join(' L')}` : '';
   const area = line ? `${line} L${x(CHART_TO_H).toFixed(1)} ${base} L${x(CHART_FROM_H).toFixed(1)} ${base} Z` : '';
+  const title = 7.4 * u;
+  const subtitle = 4 * u;
+  const count = 5.6 * u;
+  const counterTop = pad * 0.8 + title * 1.05 + subtitle * 1.25 + 2.6 * u;
   return {
     u,
     pad,
-    captionTop: 27.5 * u,
+    title,
+    subtitle,
+    count,
+    counterTop,
+    bandBottom: counterTop + count + 3.2 * u * 1.3 + 0.8 * u,
     chart: { left: pad, top, width, height: chartH, base, x, y, area, line },
     footerLines,
   };
@@ -154,17 +166,14 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
   const clockRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef<HTMLDivElement>(null);
   const countRef = useRef<HTMLSpanElement>(null);
-  const hookRef = useRef<HTMLDivElement>(null);
   const legendRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const captionRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const restRefs = useRef<Record<string, HTMLSpanElement | null>>({});
   const nowRef = useRef<SVGLineElement>(null);
   const nowRefSide = useRef<SVGLineElement>(null);
   const topInkRef = useRef<HTMLDivElement>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
   const bottomScrimRef = useRef<HTMLDivElement>(null);
-  const captionInkRef = useRef<HTMLDivElement>(null);
   const fineInkRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartClipRef = useRef<SVGRectElement>(null);
@@ -280,7 +289,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     const H = size?.h ?? 1;
     setInk(topInkRef.current, inkDayAt(dayFrac, 0.08));
     setInk(scrimRef.current, inkDayAt(dayFrac, 0.1));
-    setInk(captionInkRef.current, inkDayAt(dayFrac, g ? (g.captionTop + 4 * g.u) / H : 0.25));
+    setInk(legendRef.current, inkDayAt(dayFrac, g ? (g.bandBottom + 2 * g.u) / H : 0.3));
     setInk(chartRef.current, inkDayAt(dayFrac, g ? (g.chart.top + g.chart.height / 2) / H : 0.85));
     setInk(bottomScrimRef.current, inkDayAt(dayFrac, 0.88));
     setInk(fineInkRef.current, inkDayAt(dayFrac, 0.97));
@@ -291,14 +300,11 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
     const active = activeAtHour(data.stats, data.startMs, hour);
     if (countRef.current && active !== null) countRef.current.textContent = fmt(active);
     if (counterRef.current) counterRef.current.style.opacity = (active === null ? 0 : counterOpacity(t)).toFixed(3);
-    if (hookRef.current) hookRef.current.style.opacity = hookOpacity(t).toFixed(3);
     if (legendRef.current) legendRef.current.style.opacity = legendOpacity(t).toFixed(3);
     if (cardRef.current) cardRef.current.style.opacity = cardOpacity(t).toFixed(3);
     for (const cap of story.text.captions) {
       const el = captionRefs.current[cap.id];
       if (el) el.style.opacity = fadeWindow(t, cap.from, cap.to, 0.25).toFixed(3);
-      const rest = restRefs.current[cap.id];
-      if (rest && cap.restFrom !== undefined) rest.style.opacity = fadeWindow(t, cap.restFrom, cap.to + 1, 0.25).toFixed(3);
     }
 
     // The chart: the whole day ghosted, drawn solid up to the story clock.
@@ -418,7 +424,7 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
       <div
         ref={scrimRef}
         className="pointer-events-none absolute inset-x-0 top-0"
-        style={{ ...INK_NIGHT, height: g ? g.captionTop + 16 * u : '40%', background: 'linear-gradient(to bottom, rgba(var(--paper),0.85) 0%, rgba(var(--paper),0.7) 60%, rgba(var(--paper),0) 100%)' }}
+        style={{ ...INK_NIGHT, height: g ? g.bandBottom + 8 * u : '35%', background: 'linear-gradient(to bottom, rgba(var(--paper),0.85) 0%, rgba(var(--paper),0.7) 60%, rgba(var(--paper),0) 100%)' }}
       />
       <div
         ref={bottomScrimRef}
@@ -429,22 +435,21 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
 
       {g && text && story && (
         <div className="pointer-events-none absolute inset-0">
-          {/* Top band: kicker, then the live count and the clock. */}
+          {/* Top band: the title, then the live count and the clock. */}
           <div ref={topInkRef} className="absolute" style={{ ...INK_NIGHT, top: g.pad * 0.8, left: g.pad, right: g.pad, color: 'rgb(var(--ink))', textShadow: halo }}>
-            <div className="font-semibold uppercase" style={{ fontSize: 3 * u, letterSpacing: '0.16em', color: 'rgba(var(--ink),0.8)' }}>
-              {text.kicker}
-            </div>
-            <div ref={counterRef} className="flex items-start justify-between" style={{ marginTop: 2 * u, opacity: 0 }}>
+            <h1 className="font-extrabold" style={{ fontSize: g.title, lineHeight: 1.05, letterSpacing: '-0.025em' }}>{text.title}</h1>
+            <div className="font-semibold" style={{ fontSize: g.subtitle, lineHeight: 1.25, color: 'rgba(var(--ink),0.8)' }}>{text.subtitle}</div>
+            <div ref={counterRef} className="absolute flex items-start justify-between" style={{ top: g.counterTop - g.pad * 0.8, left: 0, right: 0, opacity: 0 }}>
               <div>
-                <div className="font-extrabold tabular-nums" style={{ fontSize: 9 * u, lineHeight: 1, letterSpacing: '-0.02em' }}>
+                <div className="font-extrabold tabular-nums" style={{ fontSize: g.count, lineHeight: 1, letterSpacing: '-0.02em' }}>
                   <span ref={countRef} />
                 </div>
                 <div className="font-medium" style={{ fontSize: 3.2 * u, marginTop: 0.8 * u, color: 'rgba(var(--ink),0.85)' }}>{text.counterLabel}</div>
               </div>
               <div className="text-right">
-                <div ref={clockRef} className="font-extrabold tabular-nums" style={{ fontSize: 9 * u, lineHeight: 1, letterSpacing: '-0.01em' }} />
+                <div ref={clockRef} className="font-extrabold tabular-nums" style={{ fontSize: g.count, lineHeight: 1, letterSpacing: '-0.01em' }} />
                 <div className="relative" style={{ height: 3.2 * u * 1.3, marginTop: 0.8 * u }}>
-                  {text.captions.filter(c => c.id === 'sunrise' || c.id === 'sunset').map(c => (
+                  {text.captions.map(c => (
                     <div key={c.id} ref={el => { captionRefs.current[c.id] = el; }} className="absolute right-0 top-0 whitespace-nowrap font-semibold" style={{ fontSize: 3.2 * u, opacity: 0 }}>
                       {c.text}
                     </div>
@@ -454,68 +459,45 @@ export default function LitePlayer({ day, record, rides: ridesParam }: Props) {
             </div>
           </div>
 
-          {/* Captions, under the top band. */}
-          <div ref={captionInkRef} className="absolute inset-0" style={{ ...INK_NIGHT, color: 'rgb(var(--ink))' }}>
-            <div ref={hookRef} className="absolute" style={{ top: g.pad * 0.8 + 6 * u, left: g.pad, right: g.pad, textShadow: halo }}>
-              <div className="font-extrabold" style={{ fontSize: (layout === 'wide' ? 6.6 : 6.4) * u, lineHeight: 1.05, letterSpacing: '-0.02em', whiteSpace: 'pre-line', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookTitle}</div>
-              <div className="font-semibold" style={{ fontSize: 4.2 * u, marginTop: 2 * u, lineHeight: 1.2, color: 'rgba(var(--ink),0.88)', maxWidth: layout === 'wide' ? '62%' : undefined }}>{text.hookSub}</div>
-            </div>
-
-            {text.captions.filter(c => c.id !== 'sunrise' && c.id !== 'sunset').map(c => (
-              <div
-                key={c.id}
-                ref={el => { captionRefs.current[c.id] = el; }}
-                className="absolute font-semibold"
-                style={{ top: g.captionTop, left: g.pad, right: g.pad, maxWidth: layout === 'wide' ? '58%' : undefined, fontSize: 4.6 * u, lineHeight: 1.18, opacity: 0, textShadow: halo }}
-              >
-                {c.text}
-                {c.rest && <span ref={el => { restRefs.current[c.id] = el; }} style={{ opacity: 0 }}>{c.rest}</span>}
-                {c.tally && (
-                  <div className="font-semibold tabular-nums" style={{ marginTop: 1.4 * u, fontSize: 3.8 * u, color: 'rgba(var(--ink),0.85)' }}>{c.tally}</div>
-                )}
-                {c.id === 'night' && (
-                  <div ref={legendRef} className="flex flex-wrap items-center font-medium" style={{ gap: `${1.2 * u}px ${3 * u}px`, marginTop: 2 * u, fontSize: 3.8 * u, opacity: 0 }}>
-                    <span className="inline-flex items-center" style={{ gap: 1.2 * u }}>
-                      <svg width={9 * u} height={2 * u} viewBox="0 0 90 20" aria-hidden="true" style={{ overflow: 'visible' }}>
-                        <defs>
-                          <linearGradient id="streak" gradientUnits="userSpaceOnUse" x1="2" x2="80" y1="10" y2="10">
-                            <stop offset="0" stopColor="rgb(255,150,48)" stopOpacity="0" />
-                            <stop offset="1" stopColor="rgb(255,150,48)" stopOpacity="1" />
-                          </linearGradient>
-                        </defs>
-                        <defs>
-                          <filter id="head-glow" x="-1" y="-1" width="3" height="3">
-                            <feGaussianBlur stdDeviation="3" />
-                          </filter>
-                        </defs>
-                        <path d="M2 10 L76 10" stroke="url(#streak)" strokeWidth="4" strokeLinecap="round" />
-                        <circle cx="80" cy="10" r="8" fill="rgb(255,238,205)" filter="url(#head-glow)" />
-                        <circle cx="80" cy="10" r="5.5" fill="rgb(255,238,205)" />
-                      </svg>
-                      = {text.legendRide}
-                    </span>
-                    <span className="inline-flex items-center" style={{ gap: 1.2 * u }}>
-                      <svg width={6 * u} height={2 * u} viewBox="0 0 60 20" aria-hidden="true">
-                        <path d="M2 10 L58 10" stroke="rgba(64,196,255,0.7)" strokeWidth="3" />
-                      </svg>
-                      = {text.legendStreet}
-                    </span>
-                  </div>
-                )}
-              </div>
-            ))}
+          {/* How to read, small, while the night shows its two dozen bikes. */}
+          <div
+            ref={legendRef}
+            className="absolute flex flex-wrap items-center font-medium"
+            style={{ ...INK_NIGHT, top: g.bandBottom + 0.6 * u, left: g.pad, right: g.pad, gap: `${1 * u}px ${2.6 * u}px`, fontSize: 2.8 * u, color: 'rgba(var(--ink),0.88)', textShadow: halo, opacity: 0 }}
+          >
+            <span className="inline-flex items-center" style={{ gap: 1 * u }}>
+              <svg width={7 * u} height={1.6 * u} viewBox="0 0 90 20" aria-hidden="true" style={{ overflow: 'visible' }}>
+                <defs>
+                  <linearGradient id="streak" gradientUnits="userSpaceOnUse" x1="2" x2="80" y1="10" y2="10">
+                    <stop offset="0" stopColor="rgb(255,150,48)" stopOpacity="0" />
+                    <stop offset="1" stopColor="rgb(255,150,48)" stopOpacity="1" />
+                  </linearGradient>
+                  <filter id="head-glow" x="-1" y="-1" width="3" height="3">
+                    <feGaussianBlur stdDeviation="3" />
+                  </filter>
+                </defs>
+                <path d="M2 10 L76 10" stroke="url(#streak)" strokeWidth="4" strokeLinecap="round" />
+                <circle cx="80" cy="10" r="8" fill="rgb(255,238,205)" filter="url(#head-glow)" />
+                <circle cx="80" cy="10" r="5.5" fill="rgb(255,238,205)" />
+              </svg>
+              = {text.legendRide}
+            </span>
+            <span className="inline-flex items-center" style={{ gap: 1 * u }}>
+              <svg width={5 * u} height={1.6 * u} viewBox="0 0 60 20" aria-hidden="true">
+                <path d="M2 10 L58 10" stroke="rgba(64,196,255,0.7)" strokeWidth="3" />
+              </svg>
+              = {text.legendStreet}
+            </span>
           </div>
 
           {/* End card. */}
           <div
             ref={cardRef}
             className="absolute flex flex-col items-center justify-center text-center text-white"
-            style={{ top: g.pad, bottom: (size?.h ?? 0) - g.chart.top, left: g.pad, right: g.pad, opacity: 0, textShadow: '0 1px 14px rgba(0,0,0,0.9)' }}
+            style={{ top: g.bandBottom, bottom: (size?.h ?? 0) - g.chart.top, left: g.pad, right: g.pad, opacity: 0, textShadow: '0 1px 14px rgba(0,0,0,0.9)' }}
           >
-            <div className="font-extrabold tabular-nums" style={{ fontSize: 12 * u, lineHeight: 1, letterSpacing: '-0.02em' }}>{text.card.big}</div>
-            <div className="font-semibold" style={{ fontSize: 4.6 * u, marginTop: 2.4 * u, lineHeight: 1.25, whiteSpace: 'pre-line' }}>{text.card.line}</div>
-            <div className="font-medium" style={{ fontSize: 3.8 * u, marginTop: 1.6 * u, color: 'rgba(255,255,255,0.85)' }}>{text.card.small}</div>
-            <div className="font-semibold" style={{ fontSize: 3.6 * u, marginTop: 4 * u, color: 'rgba(255,255,255,0.92)' }}>Visualization by Parvez Kose</div>
+            <div className="font-extrabold tabular-nums" style={{ fontSize: 7 * u, lineHeight: 1, letterSpacing: '-0.02em' }}>{text.card.big}</div>
+            <div className="font-semibold" style={{ fontSize: 3.6 * u, marginTop: 2.6 * u, color: 'rgba(255,255,255,0.92)' }}>{text.card.credit}</div>
           </div>
 
           {/* The chart of bikes moving. */}

@@ -1,6 +1,6 @@
 import PosterLoader from '@/components/PosterLoader';
 
-// /poster: the 4:5 still (2160x2700). scripts/poster.mjs screenshots it.
+// /poster?v=poster|x3|x4|x5|preview: the stills. scripts/poster.mjs screenshots them.
 export default function PosterPage() {
   return <PosterLoader />;
 }
