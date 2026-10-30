@@ -131,7 +131,7 @@ export const COPY = {
   sunrise: 'Sunrise {time}',
   sunset: 'Sunset {time}',
   cardBig: '{rides} rides',
-  footer: 'Data: Citi Bike System Data · {date} · rides starting or ending in Manhattan · routes estimated · Parvez Kose',
+  footer: 'Data: Citi Bike System Data · {date} · Parvez Kose',
   chartTitle: 'Bikes moving, minute by minute',
   chartTitleShort: 'Bikes moving',
   chartTitleLong: 'Bikes moving in Manhattan, minute by minute',
